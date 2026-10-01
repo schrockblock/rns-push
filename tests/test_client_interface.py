@@ -1,3 +1,5 @@
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -34,6 +36,7 @@ class FakeServer:
         self.spawned_interfaces = []
         self.rxb = 0
         self.txb = 0
+        self.bindings_lock = threading.RLock()
 
 
 class ClientInterfaceTests(unittest.TestCase):
@@ -104,6 +107,22 @@ class ClientInterfaceTests(unittest.TestCase):
         interface.teardown()
         self.assertTrue(interface.dormant)
         self.assertIn(interface, self.server.spawned_interfaces)
+        self.remove_interface.assert_not_called()
+
+    def test_peer_disconnect_during_read_loop_stays_online_while_dormant(self):
+        # Stock read_loop sets self.online = False immediately before calling teardown() on a
+        # clean peer close (TCPInterface.py:416). teardown() must put online back to True once
+        # the interface is bound, or RNS 1.5.5 Transport._inbound() drops its redirected proofs.
+        interface = self.make()
+        interface.bound_hash = DEST
+        thread = threading.Thread(target=interface.read_loop, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+        interface.peer.close()
+        thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(interface.dormant)
+        self.assertTrue(interface.online)
         self.remove_interface.assert_not_called()
 
     def test_retire_detaches_it_from_transport_and_parent(self):

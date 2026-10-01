@@ -29,26 +29,39 @@ class PushClientInterface(TCPClientInterface):
         self.dormant = False
 
     def teardown(self):
-        if self.bound_hash is None:
-            return super().teardown()
-        # self.dormant is set first, before anything else, to close the race where a
-        # concurrent transmit sees online=False/dormant=False. online is left True: RNS 1.5.5
-        # Transport._inbound() drops every inbound packet whose receiving_interface.online is
-        # False (Transport.py:1916), which would make a dormant interface's redirected proofs
-        # get discarded before the proof branch ever runs.
-        was_dormant = self.dormant
-        self.dormant = True
-        if not was_dormant:
-            RNS.log(f"{self} is dormant for {RNS.prettyhexrep(self.bound_hash)}", RNS.LOG_INFO)
-        if self.socket is not None:
-            try:
-                self.socket.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                self.socket.close()
-            except OSError:
-                pass
+        # Guarded by the server's bindings_lock for its whole duration (including the unbound
+        # branch's super().teardown()): bind()/_release() mutate bound_hash, dormant and online
+        # from the server's thread under this same (reentrant) lock, and without it a concurrent
+        # bind() could record a binding for an interface that's mid-teardown, or read bound_hash
+        # while we're changing it, leaving a zombie dormant-but-unbound interface.
+        with self.push_server.bindings_lock:
+            if self.bound_hash is None:
+                return super().teardown()
+            # self.dormant is set first, before anything else, to close the race where a
+            # concurrent transmit sees online=False/dormant=False. self.online is explicitly
+            # (re)set True, not merely left alone: stock read_loop sets self.online = False
+            # immediately before calling teardown() -- both on a clean peer close (TCPInterface.py
+            # :416) and on a socket exception (:428) -- and RNS 1.5.5 Transport._inbound() drops
+            # every inbound packet whose receiving_interface.online is False (Transport.py:1916),
+            # which would make a dormant interface's redirected proofs get discarded before the
+            # proof branch ever runs.
+            was_dormant = self.dormant
+            self.dormant = True
+            self.online = True
+            if not was_dormant:
+                RNS.log(f"{self} is dormant for {RNS.prettyhexrep(self.bound_hash)}", RNS.LOG_INFO)
+            if self.socket is not None:
+                try:
+                    self.socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    self.socket.close()
+                except OSError:
+                    pass
+                # Dropped so a later detach() (Interface.detach checks "if self.socket != None")
+                # doesn't try to shutdown/close an already-closed socket and log EBADF noise.
+                self.socket = None
 
     def retire(self):
         RNS.log(f"Retiring {self}", RNS.LOG_VERBOSE)
@@ -153,7 +166,7 @@ class PushTCPServerInterface(TCPServerInterface):
         self.settings = settings
         self.storage_dir = os.path.join(RNS.Reticulum.storagepath, "rns_push")
         self.bindings = {}
-        self._bindings_lock = threading.RLock()
+        self.bindings_lock = threading.RLock()
         self.registry = Registry(os.path.join(self.storage_dir, "registrations.json"))
         self.apns = make_apns_client(settings.key_pem, settings.key_id, settings.team_id)
         self.dispatcher = PushDispatcher(self.registry, self.apns, self.on_unregistered)
@@ -228,7 +241,9 @@ class PushTCPServerInterface(TCPServerInterface):
         return isinstance(interface, PushClientInterface) and interface.push_server is self
 
     def bind(self, destination_hash, interface):
-        with self._bindings_lock:
+        with self.bindings_lock:
+            if not interface.IN:
+                return
             previous = self.bindings.get(destination_hash)
             if previous is interface:
                 return
@@ -241,7 +256,7 @@ class PushTCPServerInterface(TCPServerInterface):
         RNS.log(f"Bound {RNS.prettyhexrep(destination_hash)} to {interface}", RNS.LOG_VERBOSE)
 
     def retire(self, destination_hash):
-        with self._bindings_lock:
+        with self.bindings_lock:
             interface = self.bindings.pop(destination_hash, None)
             if interface is not None:
                 self._release(interface)

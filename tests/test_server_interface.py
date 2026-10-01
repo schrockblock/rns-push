@@ -13,7 +13,7 @@ from RNS.Interfaces.Interface import Interface
 from RNS.Interfaces.TCPInterface import TCPServerInterface
 
 import rns_push.interface as push_interface
-from rns_push.interface import IFAC_KEYS, PushClientInterface, PushSettings, PushTCPServerInterface
+from rns_push.interface import PushClientInterface, PushSettings, PushTCPServerInterface
 from rns_push.registry import Registration
 from tests.support import FakeAPNs, ensure_reticulum, p256_pem, tcp_pair
 
@@ -27,6 +27,7 @@ class StubInterface:
         self.bound_hash = None
         self.dormant = dormant
         self.retired = False
+        self.IN = True
 
     def retire(self):
         self.retired = True
@@ -94,7 +95,7 @@ class ServerInterfaceTests(unittest.TestCase):
             PushTCPServerInterface(RNS.Transport, self.config(apns_key_file=os.path.join(self.dir, "missing.p8")))
 
     def test_ifac_options_are_refused(self):
-        for key in IFAC_KEYS:
+        for key in ("networkname", "network_name", "passphrase", "pass_phrase", "ifac_size"):
             with self.subTest(key=key):
                 with self.assertRaisesRegex(ValueError, "IFAC"):
                     PushTCPServerInterface(RNS.Transport, self.config(**{key: "16"}))
@@ -151,6 +152,14 @@ class ServerInterfaceTests(unittest.TestCase):
         server.bind(H1, interface)
         self.assertEqual(interface.bound_hash, H1)
         self.assertIs(server.bindings[H1], interface)
+
+    def test_bind_refuses_an_interface_with_in_false(self):
+        server = self.make_server()
+        interface = StubInterface()
+        interface.IN = False
+        server.bind(H1, interface)
+        self.assertIsNone(interface.bound_hash)
+        self.assertNotIn(H1, server.bindings)
 
     def test_rebinding_retires_a_dormant_previous_interface(self):
         server = self.make_server()

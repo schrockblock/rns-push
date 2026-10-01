@@ -82,6 +82,16 @@ class RegistrationService:
 
     def stop(self):
         self._stopped.set()
+        try:
+            RNS.Transport.deregister_announce_handler(self)
+        except Exception as e:
+            RNS.log(f"Could not deregister the push announce handler: {e}", RNS.LOG_ERROR)
+        if self.destination is not None:
+            try:
+                RNS.Transport.deregister_destination(self.destination)
+            except Exception as e:
+                RNS.log(f"Could not deregister the push registration destination: {e}", RNS.LOG_ERROR)
+            self.destination = None
 
     def announce(self):
         self.destination.announce(app_data=umsgpack.packb({"v": 1}))

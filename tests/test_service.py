@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import RNS
 
@@ -174,6 +175,22 @@ class ServiceTests(unittest.TestCase):
         self.service.sweep()
         self.assertEqual(self.server.retired, [self.hash])
         self.assertIsNone(self.registry.get(self.hash))
+
+    # stop / deregistration
+
+    def test_stop_on_a_never_started_service_does_not_raise(self):
+        self.service.stop()  # must not raise
+        self.assertIsNone(self.service.destination)
+
+    def test_stop_after_start_deregisters_the_announce_handler_and_destination(self):
+        sentinel = object()
+        self.service.destination = sentinel
+        with mock.patch.object(RNS.Transport, "deregister_announce_handler") as deregister_handler, \
+                mock.patch.object(RNS.Transport, "deregister_destination") as deregister_destination:
+            self.service.stop()
+        deregister_handler.assert_called_once_with(self.service)
+        deregister_destination.assert_called_once_with(sentinel)
+        self.assertIsNone(self.service.destination)
 
 
 class IdentityFileTests(unittest.TestCase):
