@@ -53,8 +53,8 @@ Failure response: `{"ok": false, "error": <str>}`, with `error` one of:
 | `not_identified` | the link was not identified before the request |
 | `bad_request` | data is not a map, `v` is not 1, a field is missing, the wrong type, or `environment` is not one of the two values |
 | `bundle_not_allowed` | `bundle_id` is not in the hub's allow-list |
-| `not_direct` | the link did not arrive over one of this hub's spawned client connections |
-| `rate_limited` | more than 10 requests from this identity in the past hour |
+| `not_direct` | the link was not opened by the client itself over one of this hub's spawned client connections (for example, it was relayed through another Reticulum node) |
+| `rate_limited` | more than 10 requests from this identity in the past hour, or (`/register` for an identity not yet registered) the hub already holds its maximum number of registrations |
 
 A client treats any failure as "not registered" and surfaces the code.
 

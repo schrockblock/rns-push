@@ -43,7 +43,9 @@ In the Reticulum `config`:
 ```
 
 All `TCPServerInterface` options work except IFAC (`network_name`, `passphrase`, `ifac_size`),
-which this interface refuses. Transport must be enabled.
+which this interface refuses. Transport must be enabled. The optional `max_registrations`
+(default 10000) caps how many clients the hub keeps registered; once full, new clients are
+refused with `rate_limited` until registrations expire or are removed.
 
 Start `rnsd`, then run `rns-push status` to print the registration destination hash. Clients
 enter that hash as their push hub destination. State lives in `<config>/storage/rns_push/`.

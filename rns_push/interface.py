@@ -14,7 +14,7 @@ from .apns import APNsClient, JWTSigner
 from .dispatcher import PushDispatcher
 from .packet import parse_header
 from .registry import Registry
-from .service import RegistrationService, load_or_create_identity
+from .service import DEFAULT_MAX_REGISTRATIONS, RegistrationService, load_or_create_identity
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
 DIRECT_LINK_CAP = 64
@@ -157,6 +157,7 @@ class PushSettings:
     key_id: str
     team_id: str
     allowed_bundle_ids: tuple
+    max_registrations: int = DEFAULT_MAX_REGISTRATIONS
 
     @classmethod
     def from_config(cls, c):
@@ -175,7 +176,16 @@ class PushSettings:
         key_id = str(c["apns_key_id"]).strip()
         team_id = str(c["apns_team_id"]).strip()
         JWTSigner(key_pem, key_id, team_id)  # fail at startup, not at the first push
-        return cls(key_pem, key_id, team_id, _items(c["allowed_bundle_ids"]))
+        max_registrations = DEFAULT_MAX_REGISTRATIONS
+        if "max_registrations" in c:
+            try:
+                max_registrations = int(str(c["max_registrations"]).strip())
+            except ValueError:
+                max_registrations = 0
+            if max_registrations < 1:
+                raise ValueError(f"PushTCPServerInterface needs a positive integer for \"max_registrations\", "
+                                 f"not {c['max_registrations']!r}")
+        return cls(key_pem, key_id, team_id, _items(c["allowed_bundle_ids"]), max_registrations)
 
 
 def make_apns_client(key_pem, key_id, team_id):
@@ -199,7 +209,8 @@ class PushTCPServerInterface(TCPServerInterface):
         self.registry = Registry(os.path.join(self.storage_dir, "registrations.json"))
         self.apns = make_apns_client(settings.key_pem, settings.key_id, settings.team_id)
         self.dispatcher = PushDispatcher(self.registry, self.apns, self.on_unregistered)
-        self.service = RegistrationService(self, self.registry, settings.allowed_bundle_ids)
+        self.service = RegistrationService(self, self.registry, settings.allowed_bundle_ids,
+                                           max_registrations=settings.max_registrations)
         if self.START_SERVICE:
             threading.Thread(target=self._start_service, daemon=True).start()
 

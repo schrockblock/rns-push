@@ -113,6 +113,21 @@ class ServerInterfaceTests(unittest.TestCase):
                 config = Interface.get_config_obj(self.config(allowed_bundle_ids=list(value) if isinstance(value, tuple) else value))
                 self.assertEqual(PushSettings.from_config(config).allowed_bundle_ids, expected)
 
+    def test_max_registrations_defaults_and_parses(self):
+        self.assertEqual(PushSettings.from_config(Interface.get_config_obj(self.config())).max_registrations, 10000)
+        config = Interface.get_config_obj(self.config(max_registrations="250"))
+        self.assertEqual(PushSettings.from_config(config).max_registrations, 250)
+
+    def test_invalid_max_registrations_is_refused(self):
+        for value in ("many", "0", "-5"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "max_registrations"):
+                    PushTCPServerInterface(RNS.Transport, self.config(max_registrations=value))
+
+    def test_max_registrations_reaches_the_registration_service(self):
+        server = self.make_server(max_registrations="7")
+        self.assertEqual(server.service.max_registrations, 7)
+
     def test_state_lives_under_the_storage_path(self):
         server = self.make_server()
         self.assertEqual(server.registry.path, os.path.join(self.dir, "rns_push", "registrations.json"))

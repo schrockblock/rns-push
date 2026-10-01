@@ -7,7 +7,7 @@ from unittest import mock
 import RNS
 
 from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash
-from rns_push.service import RegistrationService, load_or_create_identity, path_interface
+from rns_push.service import REQUEST_WINDOW, RegistrationService, load_or_create_identity, path_interface
 from tests.support import FakeClock
 
 LINK_ID = b"\x77" * 16
@@ -135,6 +135,25 @@ class ServiceTests(unittest.TestCase):
         self.clock.advance(60 * 60)
         self.assertTrue(self.register()["ok"])
 
+    def test_new_registration_is_refused_once_the_registry_is_full(self):
+        self.service.max_registrations = 2
+        others = [RNS.Identity(), RNS.Identity()]
+        for identity in others:
+            self.assertTrue(self.register(identity=identity)["ok"])
+        self.assertEqual(self.register(), {"ok": False, "error": "rate_limited"})
+        self.assertIsNone(self.registry.get(self.hash))
+        self.assertEqual(len(self.server.binds), 2)
+
+    def test_re_registering_an_existing_hash_is_allowed_when_full(self):
+        self.service.max_registrations = 1
+        self.assertTrue(self.register()["ok"])
+        response = self.register(data=self.body(token=b"\xbb" * 32))
+        self.assertTrue(response["ok"])
+        self.assertEqual(self.registry.get(self.hash).token, b"\xbb" * 32)
+
+    def test_max_registrations_defaults_to_ten_thousand(self):
+        self.assertEqual(self.service.max_registrations, 10000)
+
     def test_handler_exception_answers_bad_request(self):
         def broken(link_id):
             raise RuntimeError("boom")
@@ -201,6 +220,16 @@ class ServiceTests(unittest.TestCase):
         self.service.sweep()
         self.assertEqual(self.server.retired, [self.hash])
         self.assertIsNone(self.registry.get(self.hash))
+
+    def test_sweep_prunes_stale_and_empty_request_histories(self):
+        stale, fresh = RNS.Identity(), RNS.Identity()
+        self.register(identity=stale)
+        self.clock.advance(REQUEST_WINDOW - 10)
+        self.register(identity=fresh)
+        self.service._requests[b"\x42" * 16]  # an empty history, as a defaultdict lookup leaves behind
+        self.clock.advance(10)
+        self.service.sweep()
+        self.assertEqual(set(self.service._requests), {fresh.hash})
 
     # stop / deregistration
 

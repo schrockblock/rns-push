@@ -16,6 +16,7 @@ SWEEP_INTERVAL = 60 * 60
 REQUEST_LIMIT = 10
 REQUEST_WINDOW = 60 * 60
 MAX_TOKEN_LENGTH = 100
+DEFAULT_MAX_REGISTRATIONS = 10000
 
 
 def _error(code):
@@ -59,11 +60,12 @@ class RegistrationService:
 
     aspect_filter = "lxmf.delivery"
 
-    def __init__(self, server, registry, allowed_bundle_ids, clock=time.time,
-                 find_link=find_active_link, path_interface=path_interface):
+    def __init__(self, server, registry, allowed_bundle_ids, max_registrations=DEFAULT_MAX_REGISTRATIONS,
+                 clock=time.time, find_link=find_active_link, path_interface=path_interface):
         self.server = server
         self.registry = registry
         self.allowed_bundle_ids = frozenset(allowed_bundle_ids)
+        self.max_registrations = max_registrations
         self.clock = clock
         self.find_link = find_link
         self.path_interface = path_interface
@@ -102,6 +104,12 @@ class RegistrationService:
     def sweep(self):
         for destination_hash in self.registry.expire():
             self.server.retire(destination_hash)
+        now = self.clock()
+        with self._lock:
+            stale = [identity_hash for identity_hash, history in self._requests.items()
+                     if not history or now - history[-1] >= REQUEST_WINDOW]
+            for identity_hash in stale:
+                del self._requests[identity_hash]
 
     def handle_register(self, path, data, request_id, link_id, remote_identity, requested_at):
         try:
@@ -112,6 +120,9 @@ class RegistrationService:
             if bundle_id not in self.allowed_bundle_ids:
                 return _error("bundle_not_allowed")
             destination_hash = delivery_hash(remote_identity)
+            if self.registry.get(destination_hash) is None and len(self.registry.all()) >= self.max_registrations:
+                RNS.log(f"Push registry is full ({self.max_registrations}), refusing a new registration", RNS.LOG_WARNING)
+                return _error("rate_limited")
             registration = Registration(destination_hash, remote_identity.get_public_key(), token,
                                         environment, bundle_id, self.clock())
             self.registry.put(registration)
