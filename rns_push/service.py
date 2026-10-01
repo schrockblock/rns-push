@@ -4,7 +4,7 @@ import threading
 import time
 
 import RNS
-from RNS.Transport import IDX_PT_RVCD_IF
+from RNS.Transport import IDX_PT_HOPS, IDX_PT_RVCD_IF
 from RNS.vendor import umsgpack
 
 from .registry import ENVIRONMENTS, Registration, delivery_hash
@@ -30,8 +30,11 @@ def find_active_link(link_id):
 
 
 def path_interface(destination_hash):
+    """(receiving interface, hop count) of the current path, or (None, None)."""
     entry = RNS.Transport.path_table.get(destination_hash)
-    return entry[IDX_PT_RVCD_IF] if entry is not None else None
+    if entry is None:
+        return None, None
+    return entry[IDX_PT_RVCD_IF], entry[IDX_PT_HOPS]
 
 
 def load_or_create_identity(path):
@@ -143,8 +146,11 @@ class RegistrationService:
                 return
             if announced_identity.get_public_key() != registration.identity_public_key:
                 return
-            interface = self.path_interface(destination_hash)
-            if self.server.owns(interface):
+            # Hops 1 means the announcing node is our direct neighbour on that interface. Anything
+            # further away was relayed by another transport node connected to us, whose
+            # interface must never be bound (it would black-hole every path learned via it).
+            interface, hops = self.path_interface(destination_hash)
+            if hops == 1 and self.server.owns(interface):
                 self.server.bind(destination_hash, interface)
         except Exception as e:
             RNS.log(f"Push announce handler failed: {e}", RNS.LOG_ERROR)
@@ -156,7 +162,7 @@ class RegistrationService:
             return None, _error("rate_limited")
         link = self.find_link(link_id)
         interface = getattr(link, "attached_interface", None) if link is not None else None
-        if not self.server.owns(interface):
+        if not (self.server.owns(interface) and interface.is_direct_link(link_id)):
             return None, _error("not_direct")
         return interface, None
 

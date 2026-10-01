@@ -1,3 +1,4 @@
+import collections
 import dataclasses
 import os
 import socket
@@ -16,6 +17,7 @@ from .registry import Registry
 from .service import RegistrationService, load_or_create_identity
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
+DIRECT_LINK_CAP = 64
 
 
 class PushClientInterface(TCPClientInterface):
@@ -27,6 +29,14 @@ class PushClientInterface(TCPClientInterface):
         self.push_server = push_server
         self.bound_hash = None
         self.dormant = False
+        self._direct_links = collections.OrderedDict()
+        self._direct_links_lock = threading.Lock()
+
+    def is_direct_link(self, link_id):
+        """True when the LINKREQUEST for link_id arrived here with wire hops 0, i.e. it was
+        sent by the connected peer itself rather than relayed by another transport node."""
+        with self._direct_links_lock:
+            return link_id in self._direct_links
 
     def teardown(self):
         # Guarded by the server's bindings_lock for its whole duration (including the unbound
@@ -87,6 +97,7 @@ class PushClientInterface(TCPClientInterface):
             RNS.log(f"Could not queue a push from {self}: {e}", RNS.LOG_ERROR)
 
     def process_incoming(self, data):
+        self._note_direct_link(data)
         target = self._proof_target(data)
         if target is None:
             return super().process_incoming(data)
@@ -95,6 +106,24 @@ class PushClientInterface(TCPClientInterface):
             if self.parent_interface is not None:
                 self.parent_interface.rxb += len(data)
             self.owner.inbound(data, target)
+
+    def _note_direct_link(self, data):
+        try:
+            if len(data) < 2 or data[1] != 0:
+                return
+            header = parse_header(data)
+            if header is None or header.packet_type != RNS.Packet.LINKREQUEST:
+                return
+            packet = RNS.Packet(None, data)
+            packet.unpack()
+            link_id = RNS.Link.link_id_from_lr_packet(packet)
+            with self._direct_links_lock:
+                self._direct_links[link_id] = True
+                self._direct_links.move_to_end(link_id)
+                while len(self._direct_links) > DIRECT_LINK_CAP:
+                    self._direct_links.popitem(last=False)
+        except Exception as e:
+            RNS.log(f"Could not read a link request on {self}: {e}", RNS.LOG_DEBUG)
 
     def _proof_target(self, data):
         """Stock Transport forwards a proof only if it arrives on the interface the proved

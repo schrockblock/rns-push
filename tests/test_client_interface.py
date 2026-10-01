@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 import unittest
@@ -212,6 +213,61 @@ class ClientInterfaceTests(unittest.TestCase):
         with self.reverse_table(foreign):
             fresh.process_incoming(proof)
         self.assertEqual(self.owner.inbound_calls, [(proof, fresh)])
+
+    # direct links
+
+    def link_request(self, hops=0, header_type=RNS.Packet.HEADER_1, payload=None):
+        raw = bytearray(make_raw(RNS.Packet.LINKREQUEST, PROOF_DEST, header_type=header_type,
+                                 payload=payload if payload is not None else os.urandom(RNS.Link.ECPUBSIZE)))
+        raw[1] = hops
+        return bytes(raw)
+
+    def link_id_of(self, raw):
+        packet = RNS.Packet(None, raw)
+        packet.unpack()
+        return RNS.Link.link_id_from_lr_packet(packet)
+
+    def test_link_request_sent_by_the_neighbour_itself_is_direct(self):
+        interface = self.make()
+        raw = self.link_request(hops=0)
+        interface.process_incoming(raw)
+        self.assertTrue(interface.is_direct_link(self.link_id_of(raw)))
+        self.assertEqual(self.owner.inbound_calls, [(raw, interface)])
+
+    def test_link_request_with_signalling_bytes_is_direct_under_rns_link_id(self):
+        interface = self.make()
+        raw = self.link_request(hops=0, header_type=RNS.Packet.HEADER_2,
+                                payload=os.urandom(RNS.Link.ECPUBSIZE) + b"\x01\x02\x03")
+        interface.process_incoming(raw)
+        self.assertTrue(interface.is_direct_link(self.link_id_of(raw)))
+
+    def test_relayed_link_request_is_not_direct(self):
+        interface = self.make()
+        raw = self.link_request(hops=1)
+        interface.process_incoming(raw)
+        self.assertFalse(interface.is_direct_link(self.link_id_of(raw)))
+        self.assertEqual(self.owner.inbound_calls, [(raw, interface)])
+
+    def test_other_packet_types_are_never_direct_links(self):
+        interface = self.make()
+        raw = make_raw(RNS.Packet.DATA, PROOF_DEST, payload=os.urandom(RNS.Link.ECPUBSIZE))
+        interface.process_incoming(raw)
+        self.assertFalse(interface.is_direct_link(self.link_id_of(raw)))
+
+    def test_only_the_most_recent_direct_links_are_kept(self):
+        interface = self.make()
+        raws = [self.link_request() for _ in range(65)]
+        for raw in raws:
+            interface.process_incoming(raw)
+        self.assertFalse(interface.is_direct_link(self.link_id_of(raws[0])))
+        self.assertTrue(all(interface.is_direct_link(self.link_id_of(raw)) for raw in raws[1:]))
+
+    def test_unparseable_link_request_still_reaches_transport(self):
+        interface = self.make()
+        raw = self.link_request()
+        with mock.patch.object(RNS.Link, "link_id_from_lr_packet", side_effect=RuntimeError("boom")):
+            interface.process_incoming(raw)
+        self.assertEqual(self.owner.inbound_calls, [(raw, interface)])
 
     def test_non_proof_goes_to_self_even_with_a_matching_reverse_entry(self):
         dormant = self.dormant()

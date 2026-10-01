@@ -7,7 +7,7 @@ from unittest import mock
 import RNS
 
 from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash
-from rns_push.service import RegistrationService, load_or_create_identity
+from rns_push.service import RegistrationService, load_or_create_identity, path_interface
 from tests.support import FakeClock
 
 LINK_ID = b"\x77" * 16
@@ -35,18 +35,27 @@ class FakeLink:
         self.attached_interface = attached_interface
 
 
+class FakeInterface:
+    def __init__(self, direct_links=()):
+        self.direct_links = set(direct_links)
+
+    def is_direct_link(self, link_id):
+        return link_id in self.direct_links
+
+
 class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.clock = FakeClock(1_000_000.0)
         self.registry = Registry(os.path.join(self.dir, "registrations.json"), clock=self.clock)
         self.server = FakeServer()
-        self.interface = object()
+        self.interface = FakeInterface(direct_links=[LINK_ID])
         self.server.owned.add(id(self.interface))
         self.links = {LINK_ID: FakeLink(self.interface)}
         self.paths = {}
         self.service = RegistrationService(self.server, self.registry, ("co.example.push",), clock=self.clock,
-                                           find_link=self.links.get, path_interface=self.paths.get)
+                                           find_link=self.links.get,
+                                           path_interface=lambda h: self.paths.get(h, (None, None)))
         self.identity = RNS.Identity()
         self.hash = delivery_hash(self.identity)
 
@@ -82,9 +91,18 @@ class ServiceTests(unittest.TestCase):
         self.assertIsNone(self.registry.get(self.hash))
 
     def test_link_not_over_our_spawned_interface_is_refused(self):
-        self.links[LINK_ID] = FakeLink(object())
+        self.links[LINK_ID] = FakeLink(FakeInterface(direct_links=[LINK_ID]))
         self.assertEqual(self.register(), {"ok": False, "error": "not_direct"})
         self.assertEqual(self.server.binds, [])
+
+    def test_link_whose_request_was_relayed_to_our_interface_is_refused(self):
+        # The LINKREQUEST arrived on our spawned interface with hops > 0, so the interface
+        # never recorded it as direct: the link was routed through another transport node.
+        self.interface.direct_links.clear()
+        self.assertEqual(self.register(), {"ok": False, "error": "not_direct"})
+        self.assertEqual(self.unregister(), {"ok": False, "error": "not_direct"})
+        self.assertEqual(self.server.binds, [])
+        self.assertIsNone(self.registry.get(self.hash))
 
     def test_unknown_link_is_refused(self):
         self.assertEqual(self.register(link_id=b"\x00" * 16), {"ok": False, "error": "not_direct"})
@@ -143,24 +161,32 @@ class ServiceTests(unittest.TestCase):
         self.register()
         new_interface = object()
         self.server.owned.add(id(new_interface))
-        self.paths[self.hash] = new_interface
+        self.paths[self.hash] = (new_interface, 1)
         self.service.received_announce(self.hash, self.identity, None)
         self.assertEqual(self.server.binds[-1], (self.hash, new_interface))
 
+    def test_announce_relayed_through_our_interface_from_further_away_is_ignored(self):
+        self.register()
+        relay = object()
+        self.server.owned.add(id(relay))
+        self.paths[self.hash] = (relay, 2)
+        self.service.received_announce(self.hash, self.identity, None)
+        self.assertEqual(self.server.binds, [(self.hash, self.interface)])
+
     def test_announce_for_an_unregistered_hash_is_ignored(self):
-        self.paths[self.hash] = self.interface
+        self.paths[self.hash] = (self.interface, 1)
         self.service.received_announce(self.hash, self.identity, None)
         self.assertEqual(self.server.binds, [])
 
     def test_announce_arriving_elsewhere_is_ignored(self):
         self.register()
-        self.paths[self.hash] = object()
+        self.paths[self.hash] = (object(), 1)
         self.service.received_announce(self.hash, self.identity, None)
         self.assertEqual(len(self.server.binds), 1)
 
     def test_announce_with_a_different_identity_key_is_ignored(self):
         self.register()
-        self.paths[self.hash] = self.interface
+        self.paths[self.hash] = (self.interface, 1)
         self.service.received_announce(self.hash, RNS.Identity(), None)
         self.assertEqual(len(self.server.binds), 1)
 
@@ -191,6 +217,15 @@ class ServiceTests(unittest.TestCase):
         deregister_handler.assert_called_once_with(self.service)
         deregister_destination.assert_called_once_with(sentinel)
         self.assertIsNone(self.service.destination)
+
+
+class PathInterfaceTests(unittest.TestCase):
+    def test_reads_the_receiving_interface_and_hop_count_from_the_path_table(self):
+        interface = object()
+        entry = [0.0, b"\x01" * 16, 3, 0.0, [], interface, b"\x02" * 32]
+        with mock.patch.object(RNS.Transport, "path_table", {b"\x09" * 16: entry}):
+            self.assertEqual(path_interface(b"\x09" * 16), (interface, 3))
+            self.assertEqual(path_interface(b"\x08" * 16), (None, None))
 
 
 class IdentityFileTests(unittest.TestCase):
