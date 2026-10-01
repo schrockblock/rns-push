@@ -33,6 +33,9 @@ class RegistryTests(unittest.TestCase):
         registry = self.make()
         registry.put(registration())
         self.assertEqual(registry.get(H1), registration())
+        # Strengthen: verify entry persists across reload (catches M9 where put doesn't persist)
+        reloaded = self.make()
+        self.assertEqual(reloaded.get(H1), registration())
 
     def test_put_replaces_the_entry_for_the_same_hash(self):
         registry = self.make()
@@ -53,6 +56,8 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(REGISTRATION_LIFETIME, 30 * 24 * 60 * 60)
 
     def test_expire_removes_only_entries_past_thirty_days(self):
+        # Strengthen: verify the constant is correct (catches M3 mutations)
+        self.assertEqual(REGISTRATION_LIFETIME, 30 * 24 * 60 * 60)
         registry = self.make()
         registry.put(registration(H1, registered_at=self.clock.now - REGISTRATION_LIFETIME - 1))
         registry.put(registration(H2, registered_at=self.clock.now - REGISTRATION_LIFETIME + 60))
@@ -69,9 +74,15 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(reloaded.get(H1), registration(H1))
 
     def test_removal_and_expiry_are_persisted(self):
+        import json
         registry = self.make()
         registry.put(registration(H1))
         registry.put(registration(H2, registered_at=self.clock.now - REGISTRATION_LIFETIME - 1))
+        # Verify entries were persisted to disk (catches M9 where put doesn't persist)
+        self.assertTrue(os.path.isfile(self.path), "Entries should have been persisted to disk")
+        with open(self.path) as f:
+            before = json.load(f)
+        self.assertGreater(len(before["registrations"]), 0, "File should contain entries")
         registry.remove(H1)
         registry.expire()
         self.assertEqual(self.make().all(), [])
