@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rns-push"
+version = "0.1.0"
+description = "A push-capable Reticulum hub interface: wakes sleeping iOS clients through APNs"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+dependencies = ["rns>=1.5.5,<1.6", "h2>=4.1,<5"]
+
+[project.scripts]
+rns-push = "rns_push.cli:main"
+
+[tool.setuptools]
+packages = ["rns_push"]

@@ -1,0 +1,9 @@
+[reticulum]
+  enable_transport = No
+  share_instance = No
+  panic_on_interface_error = No
+
+[logging]
+  loglevel = 1
+
+[interfaces]
