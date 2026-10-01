@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
+from rns_push import apns
 from rns_push.apns import CONNECTION_FAILED, APNsClient, JWTSigner
 from tests.fake_h2 import FakeH2Server
 from tests.support import FakeClock, p256_pem
@@ -118,6 +119,12 @@ class APNsClientTests(unittest.TestCase):
             raise OSError("refused")
         client = APNsClient(self.signer, connect=refuse, clock=self.clock)
         self.assertEqual(client.send("sandbox", "abcd", "co.example.push", "0011", b"{}"), CONNECTION_FAILED)
+
+    def test_response_without_a_status_reports_failure(self):
+        with mock.patch.object(apns._Connection, "request", return_value=(None, b"")):
+            self.assertEqual(self.send(), CONNECTION_FAILED)
+        self.assertEqual(self.send(), (200, None))
+        self.assertEqual(self.server.connections, 2)
 
     def test_invalidate_token_reaches_the_signer(self):
         with mock.patch.object(self.signer, "invalidate") as invalidate:

@@ -1,5 +1,6 @@
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 
@@ -96,6 +97,14 @@ class RegistryTests(unittest.TestCase):
         registry.remove(H1)
         registry.expire()
         self.assertEqual(self.make().all(), [])
+
+    @unittest.skipUnless(os.name == "posix", "file modes are POSIX")
+    def test_registry_file_is_private(self):
+        registry = self.make()
+        registry.put(registration(H1))
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        registry.put(registration(H2))
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
 
     def test_corrupt_file_is_set_aside_and_the_registry_starts_empty(self):
         os.makedirs(os.path.dirname(self.path))

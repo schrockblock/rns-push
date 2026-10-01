@@ -119,6 +119,7 @@ class Registry:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             with open(tmp, "w") as f:
                 json.dump({"v": 1, "registrations": [r.to_json() for r in self._entries.values()]}, f)
+            os.chmod(tmp, 0o600)
             os.replace(tmp, self.path)
         except Exception as e:
             RNS.log(f"Could not write the push registry to {self.path}: {e}", RNS.LOG_ERROR)

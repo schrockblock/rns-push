@@ -24,7 +24,7 @@ class PushClientInterface(TCPClientInterface):
     """A spawned hub connection. Once bound to a registration, it survives its socket:
     it stays attached to Transport, and what Transport hands it goes out as a push."""
 
-    def __init__(self, owner, configuration, connected_socket=None, push_server=None):
+    def __init__(self, owner, configuration, connected_socket=None, *, push_server):
         super().__init__(owner, configuration, connected_socket=connected_socket)
         self.push_server = push_server
         self.bound_hash = None

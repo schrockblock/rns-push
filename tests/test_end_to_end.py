@@ -123,7 +123,7 @@ class EndToEndTest(unittest.TestCase):
         return os.path.join(self.dir, name)
 
     def test_a_pushed_packet_is_proved_back_to_the_sender(self):
-        self.spawn("hub", self.hub_dir, self.path("pushes.jsonl"), self.path("ready.json"))
+        self.spawn("hub", self.hub_dir, self.path("pushes.jsonl"), self.path("ready.json"), self.path("dormant.json"))
         registration_hex = json.loads(wait_for_file(self.path("ready.json"), 30))["registration_hash"]
 
         client = self.spawn("client", self.client_dir, self.identity_path, registration_hex, self.path("registered.json"))
@@ -131,7 +131,8 @@ class EndToEndTest(unittest.TestCase):
         registered = json.loads(wait_for_file(self.path("registered.json"), 5))
         client_hex = delivery_hash(self.identity).hex()
         self.assertEqual(registered, {"ok": True, "error": None, "destination_hash": client_hex})
-        time.sleep(1.0)  # let the hub see the closed socket and go dormant
+        dormant = json.loads(wait_for_file(self.path("dormant.json"), 15))
+        self.assertEqual(dormant, {"bound_hash": client_hex}, "the hub never went dormant, see hub.log")
 
         self.spawn("sender", self.sender_dir, client_hex, self.path("sent.json"), self.path("receipt.json"))
         wait_for_file(self.path("sent.json"), 40)

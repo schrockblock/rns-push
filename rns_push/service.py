@@ -47,6 +47,7 @@ def load_or_create_identity(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     identity = RNS.Identity()
     identity.to_file(path)
+    os.chmod(path, 0o600)
     return identity
 
 

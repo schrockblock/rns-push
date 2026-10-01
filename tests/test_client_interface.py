@@ -1,3 +1,4 @@
+import inspect
 import os
 import threading
 import time
@@ -79,6 +80,11 @@ class ClientInterfaceTests(unittest.TestCase):
         interface.bound_hash = DEST
         interface.teardown()
         return interface
+
+    def test_push_server_is_a_required_keyword(self):
+        parameter = inspect.signature(PushClientInterface.__init__).parameters["push_server"]
+        self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(parameter.default, inspect.Parameter.empty)
 
     # dormancy
 

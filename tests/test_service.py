@@ -1,5 +1,7 @@
+import inspect
 import os
 import shutil
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -209,6 +211,15 @@ class ServiceTests(unittest.TestCase):
         self.service.received_announce(self.hash, RNS.Identity(), None)
         self.assertEqual(len(self.server.binds), 1)
 
+    def test_handlers_have_the_arity_rns_dispatches_on(self):
+        # RNS 1.5.5 picks the call shape from the parameter count: Transport.py:2507 for announce
+        # handlers (3 = destination_hash, announced_identity, app_data) and Link.handle_request
+        # (Link.py:830) for request handlers (6 = path, data, request_id, link_id, remote_identity,
+        # requested_at).
+        self.assertEqual(len(inspect.signature(self.service.received_announce).parameters), 3)
+        self.assertEqual(len(inspect.signature(self.service.handle_register).parameters), 6)
+        self.assertEqual(len(inspect.signature(self.service.handle_unregister).parameters), 6)
+
     def test_aspect_filter_is_lxmf_delivery(self):
         self.assertEqual(RegistrationService.aspect_filter, "lxmf.delivery")
 
@@ -265,6 +276,16 @@ class IdentityFileTests(unittest.TestCase):
             created = load_or_create_identity(path)
             self.assertTrue(os.path.isfile(path))
             self.assertEqual(load_or_create_identity(path).hash, created.hash)
+        finally:
+            shutil.rmtree(directory)
+
+    @unittest.skipUnless(os.name == "posix", "file modes are POSIX")
+    def test_new_identity_file_is_private(self):
+        directory = tempfile.mkdtemp()
+        try:
+            path = os.path.join(directory, "rns_push", "identity")
+            load_or_create_identity(path)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         finally:
             shutil.rmtree(directory)
 

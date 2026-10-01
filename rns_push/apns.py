@@ -144,6 +144,10 @@ class APNsClient:
             return CONNECTION_FAILED
         if connection.closed:
             self._drop(environment)
+        if status is None:
+            RNS.log(f"APNs response from {host} had no status", RNS.LOG_WARNING)
+            self._drop(environment)
+            return CONNECTION_FAILED
         reason = None
         if status != 200:
             try:

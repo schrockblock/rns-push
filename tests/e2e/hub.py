@@ -1,4 +1,7 @@
-"""Run an rns-push hub with a file-backed APNs. argv: configdir pushes_path ready_path"""
+"""Run an rns-push hub with a file-backed APNs. argv: configdir pushes_path ready_path dormant_path
+
+Writes ready_path once the registration destination exists, and dormant_path once any of the
+push server's client interfaces has gone dormant."""
 import json
 import os
 import sys
@@ -26,19 +29,35 @@ class FileAPNs:
         pass
 
 
+def write_json(path, value):
+    with open(path + ".tmp", "w") as f:
+        json.dump(value, f)
+    os.replace(path + ".tmp", path)
+
+
+def wait_for_dormancy(server, dormant_path):
+    while True:
+        bound = [i.bound_hash for i in list(server.spawned_interfaces)
+                 if isinstance(i, push_interface.PushClientInterface) and i.dormant]
+        bound = [h for h in bound if h is not None]
+        if bound:
+            write_json(dormant_path, {"bound_hash": bound[0].hex()})
+            break
+        time.sleep(0.1)
+    while True:
+        time.sleep(1)
+
+
 def main():
-    configdir, pushes_path, ready_path = sys.argv[1:4]
+    configdir, pushes_path, ready_path, dormant_path = sys.argv[1:5]
     push_interface.make_apns_client = lambda key_pem, key_id, team_id: FileAPNs(pushes_path)
     RNS.Reticulum(configdir=configdir)
     deadline = time.time() + 30
     while time.time() < deadline:
         for interface in list(RNS.Transport.interfaces):
             if isinstance(interface, push_interface.PushTCPServerInterface) and interface.service.destination is not None:
-                with open(ready_path + ".tmp", "w") as f:
-                    json.dump({"registration_hash": interface.service.destination.hash.hex()}, f)
-                os.replace(ready_path + ".tmp", ready_path)
-                while True:
-                    time.sleep(1)
+                write_json(ready_path, {"registration_hash": interface.service.destination.hash.hex()})
+                wait_for_dormancy(interface, dormant_path)
         time.sleep(0.2)
     sys.exit("the push hub interface did not start")
 
