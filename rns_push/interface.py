@@ -1,10 +1,19 @@
+import dataclasses
+import os
 import socket
+import threading
+import time
 
 import RNS
-from RNS.Interfaces.TCPInterface import TCPClientInterface
+from RNS.Interfaces.Interface import Interface
+from RNS.Interfaces.TCPInterface import TCPClientInterface, TCPServerInterface
 from RNS.Transport import IDX_RT_OUTB_IF
 
+from .apns import APNsClient, JWTSigner
+from .dispatcher import PushDispatcher
 from .packet import parse_header
+from .registry import Registry
+from .service import RegistrationService, load_or_create_identity
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
 
@@ -89,3 +98,166 @@ class PushClientInterface(TCPClientInterface):
                 and outbound.push_server is self.push_server):
             return outbound
         return None
+
+
+IFAC_KEYS = ("networkname", "network_name", "passphrase", "pass_phrase", "ifac_size")
+REQUIRED_KEYS = ("apns_key_file", "apns_key_id", "apns_team_id", "allowed_bundle_ids")
+
+
+def _items(value):
+    items = value if isinstance(value, (list, tuple)) else str(value).split(",")
+    return tuple(str(item).strip() for item in items if str(item).strip())
+
+
+@dataclasses.dataclass(frozen=True)
+class PushSettings:
+    key_pem: bytes
+    key_id: str
+    team_id: str
+    allowed_bundle_ids: tuple
+
+    @classmethod
+    def from_config(cls, c):
+        for key in IFAC_KEYS:
+            if key in c:
+                raise ValueError(f"PushTCPServerInterface does not support IFAC; remove \"{key}\" from its configuration")
+        for key in REQUIRED_KEYS:
+            if key not in c or not _items(c[key]):
+                raise ValueError(f"PushTCPServerInterface needs \"{key}\" in its configuration")
+        key_path = os.path.expanduser(str(c["apns_key_file"]).strip())
+        try:
+            with open(key_path, "rb") as f:
+                key_pem = f.read()
+        except OSError as e:
+            raise ValueError(f"Cannot read apns_key_file {key_path}: {e}")
+        key_id = str(c["apns_key_id"]).strip()
+        team_id = str(c["apns_team_id"]).strip()
+        JWTSigner(key_pem, key_id, team_id)  # fail at startup, not at the first push
+        return cls(key_pem, key_id, team_id, _items(c["allowed_bundle_ids"]))
+
+
+def make_apns_client(key_pem, key_id, team_id):
+    return APNsClient(JWTSigner(key_pem, key_id, team_id))
+
+
+class PushTCPServerInterface(TCPServerInterface):
+    """A TCPServerInterface whose clients can be woken by APNs while their socket is down."""
+
+    START_SERVICE = True
+
+    def __init__(self, owner, configuration):
+        settings = PushSettings.from_config(Interface.get_config_obj(configuration))
+        if not RNS.Reticulum.transport_enabled():
+            raise ValueError("PushTCPServerInterface requires enable_transport = yes in the [reticulum] section")
+        super().__init__(owner, configuration)
+        self.settings = settings
+        self.storage_dir = os.path.join(RNS.Reticulum.storagepath, "rns_push")
+        self.bindings = {}
+        self._bindings_lock = threading.RLock()
+        self.registry = Registry(os.path.join(self.storage_dir, "registrations.json"))
+        self.apns = make_apns_client(settings.key_pem, settings.key_id, settings.team_id)
+        self.dispatcher = PushDispatcher(self.registry, self.apns, self.on_unregistered)
+        self.service = RegistrationService(self, self.registry, settings.allowed_bundle_ids)
+        if self.START_SERVICE:
+            threading.Thread(target=self._start_service, daemon=True).start()
+
+    def _start_service(self):
+        while not getattr(RNS.Transport, "ready", False) and not self.detached:
+            time.sleep(0.5)
+        if self.detached:
+            return
+        try:
+            self.service.start(load_or_create_identity(os.path.join(self.storage_dir, "identity")))
+        except Exception as e:
+            RNS.log(f"Could not start the push registration service: {e}", RNS.LOG_ERROR)
+
+    # Copied from RNS 1.5.5 TCPServerInterface.incoming_connection, constructing
+    # PushClientInterface instead of TCPClientInterface. IFAC is refused at startup,
+    # so the IFAC key derivation is omitted. tests/test_server_interface.py checks
+    # that every attribute the stock method copies is still copied here.
+    def incoming_connection(self, handler):
+        RNS.log("Accepting incoming TCP connection", RNS.LOG_VERBOSE)
+        spawned_configuration = {"name": "Client on "+self.name, "target_host": None, "target_port": None, "i2p_tunneled": self.i2p_tunneled}
+        spawned_interface = PushClientInterface(self.owner, spawned_configuration, connected_socket=handler.request, push_server=self)
+        spawned_interface.OUT = self.OUT
+        spawned_interface.IN  = self.IN
+
+        spawned_interface.ingress_control = self.ingress_control
+        spawned_interface.ic_max_held_announces = self.ic_max_held_announces
+        spawned_interface.ic_burst_hold = self.ic_burst_hold
+        spawned_interface.ic_burst_freq = self.ic_burst_freq
+        spawned_interface.ic_burst_freq_new = self.ic_burst_freq_new
+        spawned_interface.ic_new_time = self.ic_new_time
+        spawned_interface.ic_burst_penalty = self.ic_burst_penalty
+        spawned_interface.ic_held_release_interval = self.ic_held_release_interval
+
+        spawned_interface.egress_control = self.egress_control
+        spawned_interface.ec_pr_freq = self.ec_pr_freq
+        spawned_interface.ic_pr_burst_freq_new = self.ic_pr_burst_freq_new
+        spawned_interface.ic_pr_burst_freq = self.ic_pr_burst_freq
+
+        spawned_interface.target_ip = handler.client_address[0]
+        spawned_interface.target_port = str(handler.client_address[1])
+        spawned_interface.parent_interface = self
+        spawned_interface.bitrate = self.bitrate
+        spawned_interface.optimise_mtu()
+
+        spawned_interface.ifac_size = self.ifac_size
+        spawned_interface.ifac_netname = self.ifac_netname
+        spawned_interface.ifac_netkey = self.ifac_netkey
+
+        spawned_interface.announce_rate_target = self.announce_rate_target
+        spawned_interface.announce_rate_grace = self.announce_rate_grace
+        spawned_interface.announce_rate_penalty = self.announce_rate_penalty
+        spawned_interface.mode = self.mode
+        spawned_interface.gravity = self.gravity
+        spawned_interface.recursive_prs = self.recursive_prs
+        spawned_interface.announces_from_internal = self.announces_from_internal
+        spawned_interface.announces_to_internal = self.announces_to_internal
+        spawned_interface.announce_cap = self.announce_cap
+        spawned_interface.HW_MTU = self.HW_MTU
+        spawned_interface.online = True
+        RNS.log("Spawned new push client interface: "+str(spawned_interface), RNS.LOG_VERBOSE)
+        RNS.Transport.add_interface(spawned_interface)
+        while spawned_interface in self.spawned_interfaces:
+            self.spawned_interfaces.remove(spawned_interface)
+        self.spawned_interfaces.append(spawned_interface)
+        spawned_interface.read_loop()
+
+    def owns(self, interface):
+        return isinstance(interface, PushClientInterface) and interface.push_server is self
+
+    def bind(self, destination_hash, interface):
+        with self._bindings_lock:
+            previous = self.bindings.get(destination_hash)
+            if previous is interface:
+                return
+            if previous is not None:
+                self._release(previous)
+            if interface.bound_hash is not None and interface.bound_hash != destination_hash:
+                self.bindings.pop(interface.bound_hash, None)
+            interface.bound_hash = destination_hash
+            self.bindings[destination_hash] = interface
+        RNS.log(f"Bound {RNS.prettyhexrep(destination_hash)} to {interface}", RNS.LOG_VERBOSE)
+
+    def retire(self, destination_hash):
+        with self._bindings_lock:
+            interface = self.bindings.pop(destination_hash, None)
+            if interface is not None:
+                self._release(interface)
+
+    def on_unregistered(self, destination_hash):
+        self.registry.remove(destination_hash)
+        self.retire(destination_hash)
+
+    def _release(self, interface):
+        if interface.dormant:
+            interface.retire()
+        else:
+            interface.bound_hash = None
+
+    def detach(self):
+        super().detach()
+        self.dispatcher.stop()
+        self.service.stop()
+        self.apns.close()
