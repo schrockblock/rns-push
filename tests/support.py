@@ -55,3 +55,21 @@ class FakeClock:
 
     def advance(self, seconds):
         self.now += seconds
+
+
+class FakeAPNs:
+    def __init__(self):
+        self.sends = []
+        self.responses = []
+        self.invalidations = 0
+        self.closed = False
+
+    def send(self, environment, token_hex, topic, collapse_id, payload):
+        self.sends.append((environment, token_hex, topic, collapse_id, payload))
+        return self.responses.pop(0) if self.responses else (200, None)
+
+    def invalidate_token(self):
+        self.invalidations += 1
+
+    def close(self):
+        self.closed = True
