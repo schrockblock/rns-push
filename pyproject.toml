@@ -16,3 +16,6 @@ rns-push = "rns_push.cli:main"
 
 [tool.setuptools]
 packages = ["rns_push"]
+
+[tool.setuptools.package-data]
+rns_push = ["shim/PushTCPServerInterface.py"]

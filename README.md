@@ -11,10 +11,17 @@ in [docs/server-contract.md](docs/server-contract.md).
 
 ```
 pip install rns-push
-cp shim/PushTCPServerInterface.py ~/.reticulum/interfaces/
+rns-push install-shim
 ```
 
-(Use your Reticulum config directory if it is not `~/.reticulum`.)
+`install-shim` copies a small loader file into the `interfaces` directory of your Reticulum
+config so `rnsd` can find the interface, and prints where it put it. It uses the same config
+directory `rnsd` would; pass `--config DIR` if yours is elsewhere. Run it again after upgrading.
+
+rns-push must be installed in the same Python environment as `rnsd`, because `rnsd` imports it.
+If you installed Reticulum with pipx, add rns-push to that environment instead of using
+`pip install`: `pipx inject --include-apps rns rns-push` (`--include-apps` also puts the
+`rns-push` command on your PATH).
 
 ## Apple setup
 
@@ -55,12 +62,13 @@ enter that hash as their push hub destination. State lives in `<config>/storage/
 - Dormant interfaces do not survive an `rnsd` restart. Pushing resumes the next time each
   client connects and announces.
 - The hub forgets a client's path after a week without a fresh announce (Reticulum's
-  destination timeout), with the same recovery.
+  destination timeout in the default full interface mode; shorter in access-point or roaming
+  mode), with the same recovery.
 - Notifications always read "New message". The hub never sees message content.
-- A pushed link request only wakes the app. Link setup itself does not pass through the hub
-  while the client is asleep, so the service extension cannot answer it. The app reconnects
-  when woken, and the sender's retry then goes over the live connection. Single-packet
-  messages are proved directly from the push.
+- Link requests are pushed, but they only wake the app: the link handshake cannot complete
+  while the app is asleep. Once the woken app reconnects to the hub, the sender's retry of the
+  link request succeeds over the live connection. Single-packet messages, by contrast, are
+  proved directly from the push.
 - If the push hub interface is misconfigured (an unreadable APNs key, IFAC options set, or
   transport disabled), rnsd logs an error and starts without it rather than failing. Check the
   log after configuring.

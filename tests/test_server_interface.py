@@ -241,7 +241,7 @@ class ServerInterfaceTests(unittest.TestCase):
     # shim
 
     def test_shim_exposes_the_interface_class(self):
-        with open(os.path.join(REPO, "shim", "PushTCPServerInterface.py")) as f:
+        with open(os.path.join(REPO, "rns_push", "shim", "PushTCPServerInterface.py")) as f:
             code = f.read()
         globals_ = {"Interface": Interface, "RNS": RNS}
         exec(code, globals_)

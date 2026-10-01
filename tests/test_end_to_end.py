@@ -1,4 +1,6 @@
 import base64
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -12,11 +14,11 @@ import unittest
 import RNS
 from RNS.Interfaces.TCPInterface import HDLC
 
+from rns_push import cli
 from rns_push.registry import delivery_hash
 from tests.support import p256_pem
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(TESTS_DIR)
 E2E = os.path.join(TESTS_DIR, "e2e")
 
 HUB_CONFIG = """[reticulum]
@@ -88,8 +90,8 @@ class EndToEndTest(unittest.TestCase):
         with open(key_path, "wb") as f:
             f.write(pem)
         self.hub_dir = self.config_dir("hub", HUB_CONFIG.format(port=self.port, key=key_path))
-        os.makedirs(os.path.join(self.hub_dir, "interfaces"))
-        shutil.copy(os.path.join(REPO, "shim", "PushTCPServerInterface.py"), os.path.join(self.hub_dir, "interfaces"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["install-shim", "--config", self.hub_dir]), 0)
         self.client_dir = self.config_dir("client", CLIENT_CONFIG.format(port=self.port))
         self.sender_dir = self.config_dir("sender", CLIENT_CONFIG.format(port=self.port))
         self.identity = RNS.Identity()
