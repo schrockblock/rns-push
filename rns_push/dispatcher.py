@@ -133,6 +133,6 @@ class PushDispatcher:
             return
         if status == 410 or (status == 400 and reason in UNREGISTERED_REASONS):
             RNS.log(f"APNs rejected the token for {RNS.prettyhexrep(registration.destination_hash)} ({status} {reason}), unregistering", RNS.LOG_NOTICE)
-            self.on_unregistered(registration.destination_hash)
+            self.on_unregistered(registration)
             return
         RNS.log(f"APNs push for {RNS.prettyhexrep(registration.destination_hash)} failed: {status} {reason}", RNS.LOG_ERROR)

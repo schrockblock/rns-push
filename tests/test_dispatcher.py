@@ -114,7 +114,7 @@ class DispatcherTests(unittest.TestCase):
     def test_410_unregisters(self):
         self.apns.responses = [(410, "Unregistered")]
         self.flush_one()
-        self.assertEqual(self.unregistered, [DEST])
+        self.assertEqual(self.unregistered, [registration()])
 
     def test_bad_device_token_and_wrong_topic_unregister(self):
         for reason in ("BadDeviceToken", "DeviceTokenNotForTopic"):
@@ -123,7 +123,7 @@ class DispatcherTests(unittest.TestCase):
                 self.clock.advance(60)
                 self.apns.responses = [(400, reason)]
                 self.flush_one()
-                self.assertEqual(self.unregistered, [DEST])
+                self.assertEqual(self.unregistered, [registration()])
 
     def test_other_400_does_not_unregister_or_retry(self):
         self.apns.responses = [(400, "BadTopic")]

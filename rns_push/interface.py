@@ -301,9 +301,11 @@ class PushTCPServerInterface(TCPServerInterface):
             if interface is not None:
                 self._release(interface)
 
-    def on_unregistered(self, destination_hash):
-        self.registry.remove(destination_hash)
-        self.retire(destination_hash)
+    def on_unregistered(self, registration):
+        """APNs rejected the token of this registration. The client may have re-registered
+        with a new token since the push was sent, so only that exact token is dropped."""
+        if self.registry.remove_if_token(registration.destination_hash, registration.token):
+            self.retire(registration.destination_hash)
 
     def _release(self, interface):
         if interface.dormant:

@@ -69,6 +69,17 @@ class Registry:
                 self._persist()
             return existed
 
+    def remove_if_token(self, destination_hash, token):
+        """Remove the registration only if it still carries token, so a rejection of an old
+        token never deletes the registration that replaced it."""
+        with self._lock:
+            registration = self._entries.get(destination_hash)
+            if registration is None or registration.token != token:
+                return False
+            del self._entries[destination_hash]
+            self._persist()
+            return True
+
     def all(self):
         with self._lock:
             return list(self._entries.values())

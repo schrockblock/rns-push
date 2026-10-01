@@ -51,6 +51,16 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(registry.remove(H1))
         self.assertIsNone(registry.get(H1))
 
+    def test_remove_if_token_removes_only_a_matching_registration(self):
+        registry = self.make()
+        registry.put(registration(token=b"\xaa" * 32))
+        self.assertFalse(registry.remove_if_token(H1, b"\xbb" * 32))
+        self.assertEqual(registry.get(H1).token, b"\xaa" * 32)
+        self.assertFalse(registry.remove_if_token(H2, b"\xaa" * 32))
+        self.assertTrue(registry.remove_if_token(H1, b"\xaa" * 32))
+        self.assertIsNone(registry.get(H1))
+        self.assertIsNone(self.make().get(H1))
+
     def test_expires_at_is_thirty_days_after_registration(self):
         self.assertEqual(registration(registered_at=100.0).expires_at, 100.0 + REGISTRATION_LIFETIME)
         self.assertEqual(REGISTRATION_LIFETIME, 30 * 24 * 60 * 60)

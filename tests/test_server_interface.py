@@ -212,12 +212,26 @@ class ServerInterfaceTests(unittest.TestCase):
 
     def test_apns_rejection_removes_the_registration_and_retires(self):
         server = self.make_server()
-        server.registry.put(Registration(H1, b"\x05" * 64, b"\xaa", "sandbox", "co.example.push", time.time()))
+        rejected = Registration(H1, b"\x05" * 64, b"\xaa", "sandbox", "co.example.push", time.time())
+        server.registry.put(rejected)
         interface = StubInterface(dormant=True)
         server.bind(H1, interface)
-        server.on_unregistered(H1)
+        server.on_unregistered(rejected)
         self.assertIsNone(server.registry.get(H1))
         self.assertTrue(interface.retired)
+        self.assertNotIn(H1, server.bindings)
+
+    def test_apns_rejection_of_a_replaced_token_keeps_the_fresh_registration(self):
+        server = self.make_server()
+        rejected = Registration(H1, b"\x05" * 64, b"\xaa", "sandbox", "co.example.push", time.time())
+        fresh = Registration(H1, b"\x05" * 64, b"\xbb", "sandbox", "co.example.push", time.time())
+        server.registry.put(fresh)
+        interface = StubInterface(dormant=True)
+        server.bind(H1, interface)
+        server.on_unregistered(rejected)
+        self.assertEqual(server.registry.get(H1), fresh)
+        self.assertFalse(interface.retired)
+        self.assertIs(server.bindings[H1], interface)
 
     def test_owns_only_its_own_push_clients(self):
         server = self.make_server()
