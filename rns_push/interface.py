@@ -15,15 +15,6 @@ class PushClientInterface(TCPClientInterface):
 
     def __init__(self, owner, configuration, connected_socket=None, push_server=None):
         super().__init__(owner, configuration, connected_socket=connected_socket)
-        if connected_socket is not None and self.target_ip is None:
-            # Stock TCPClientInterface leaves target_ip/target_port None for a connected_socket;
-            # normally TCPServerInterface.incoming_connection sets them right after spawning.
-            # __str__ (used by stock teardown()'s own logging) dereferences target_ip
-            # unconditionally, so a spawned interface needs it set before any teardown/retire.
-            try:
-                self.target_ip, self.target_port = connected_socket.getpeername()
-            except OSError:
-                pass
         self.push_server = push_server
         self.bound_hash = None
         self.dormant = False
@@ -31,9 +22,14 @@ class PushClientInterface(TCPClientInterface):
     def teardown(self):
         if self.bound_hash is None:
             return super().teardown()
-        self.online = False
-        if not self.dormant:
-            self.dormant = True
+        # self.dormant is set first, before anything else, to close the race where a
+        # concurrent transmit sees online=False/dormant=False. online is left True: RNS 1.5.5
+        # Transport._inbound() drops every inbound packet whose receiving_interface.online is
+        # False (Transport.py:1916), which would make a dormant interface's redirected proofs
+        # get discarded before the proof branch ever runs.
+        was_dormant = self.dormant
+        self.dormant = True
+        if not was_dormant:
             RNS.log(f"{self} is dormant for {RNS.prettyhexrep(self.bound_hash)}", RNS.LOG_INFO)
         if self.socket is not None:
             try:

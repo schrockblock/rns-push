@@ -64,6 +64,8 @@ class ClientInterfaceTests(unittest.TestCase):
         interface.OUT = True
         interface.IN = True
         interface.online = True
+        interface.target_ip = "127.0.0.1"
+        interface.target_port = "0"
         interface.peer = peer
         server.spawned_interfaces.append(interface)
         return interface
@@ -87,7 +89,7 @@ class ClientInterfaceTests(unittest.TestCase):
     def test_bound_teardown_goes_dormant_and_stays_attached(self):
         interface = self.dormant()
         self.assertTrue(interface.dormant)
-        self.assertFalse(interface.online)
+        self.assertTrue(interface.online)
         self.assertTrue(interface.OUT)
         self.assertIn(interface, self.server.spawned_interfaces)
         self.remove_interface.assert_not_called()
@@ -166,6 +168,7 @@ class ClientInterfaceTests(unittest.TestCase):
             fresh.process_incoming(proof)
         self.assertEqual(self.owner.inbound_calls, [(proof, dormant)])
         self.assertEqual(fresh.rxb, len(proof))
+        self.assertTrue(dormant.online)
 
     def test_proof_without_a_reverse_entry_goes_to_self(self):
         fresh = self.make()
