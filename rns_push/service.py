@@ -7,7 +7,7 @@ import RNS
 from RNS.Transport import IDX_PT_HOPS, IDX_PT_RVCD_IF
 from RNS.vendor import umsgpack
 
-from .registry import ENVIRONMENTS, Registration, delivery_hash
+from .registry import DEFAULT_ASPECTS, ENVIRONMENTS, Registration, destination_hash
 
 APP_NAME = "rnspush"
 ASPECT = "registration"
@@ -55,18 +55,24 @@ class _BadRequest(Exception):
     pass
 
 
+class _AspectsNotAllowed(Exception):
+    pass
+
+
 class RegistrationService:
     """The rnspush.registration destination: /register and /unregister over an identified
-    link, plus an lxmf.delivery announce handler that re-binds reconnecting clients."""
+    link, plus an announce handler that re-binds reconnecting clients."""
 
-    aspect_filter = "lxmf.delivery"
+    # Every announce: binding checks the registry, which only holds allow-listed aspects.
+    aspect_filter = None
 
     def __init__(self, server, registry, allowed_bundle_ids, max_registrations=DEFAULT_MAX_REGISTRATIONS,
-                 clock=time.time, find_link=find_active_link, path_interface=path_interface):
+                 allowed_aspects=(DEFAULT_ASPECTS,), clock=time.time, find_link=find_active_link, path_interface=path_interface):
         self.server = server
         self.registry = registry
         self.allowed_bundle_ids = frozenset(allowed_bundle_ids)
         self.max_registrations = max_registrations
+        self.allowed_aspects = frozenset(tuple(a) for a in allowed_aspects)
         self.clock = clock
         self.find_link = find_link
         self.path_interface = path_interface
@@ -120,16 +126,19 @@ class RegistrationService:
             token, environment, bundle_id = self._parse_register(data)
             if bundle_id not in self.allowed_bundle_ids:
                 return _error("bundle_not_allowed")
-            destination_hash = delivery_hash(remote_identity)
-            if self.registry.get(destination_hash) is None and len(self.registry.all()) >= self.max_registrations:
+            aspects = self._parse_aspects(data)
+            dest_hash = destination_hash(remote_identity, aspects)
+            if self.registry.get(dest_hash) is None and len(self.registry.all()) >= self.max_registrations:
                 RNS.log(f"Push registry is full ({self.max_registrations}), refusing a new registration", RNS.LOG_WARNING)
                 return _error("rate_limited")
-            registration = Registration(destination_hash, remote_identity.get_public_key(), token,
+            registration = Registration(dest_hash, remote_identity.get_public_key(), token,
                                         environment, bundle_id, self.clock())
             self.registry.put(registration)
-            self.server.bind(destination_hash, interface)
-            RNS.log(f"Registered {RNS.prettyhexrep(destination_hash)} for push", RNS.LOG_INFO)
-            return {"ok": True, "destination_hash": destination_hash, "expires_at": int(registration.expires_at)}
+            self.server.bind(dest_hash, interface)
+            RNS.log(f"Registered {RNS.prettyhexrep(dest_hash)} ({'.'.join(aspects)}) for push", RNS.LOG_INFO)
+            return {"ok": True, "destination_hash": dest_hash, "expires_at": int(registration.expires_at)}
+        except _AspectsNotAllowed:
+            return _error("aspects_not_allowed")
         except _BadRequest:
             return _error("bad_request")
         except Exception as e:
@@ -143,10 +152,14 @@ class RegistrationService:
                 return error
             if not isinstance(data, dict) or data.get("v") != 1:
                 return _error("bad_request")
-            destination_hash = delivery_hash(remote_identity)
-            self.registry.remove(destination_hash)
-            self.server.retire(destination_hash)
+            dest_hash = destination_hash(remote_identity, self._parse_aspects(data))
+            self.registry.remove(dest_hash)
+            self.server.retire(dest_hash)
             return {"ok": True}
+        except _AspectsNotAllowed:
+            return _error("aspects_not_allowed")
+        except _BadRequest:
+            return _error("bad_request")
         except Exception as e:
             RNS.log(f"Push /unregister failed: {e}", RNS.LOG_ERROR)
             return _error("bad_request")
@@ -191,6 +204,20 @@ class RegistrationService:
         if not isinstance(bundle_id, str) or not bundle_id:
             raise _BadRequest()
         return token, environment, bundle_id
+
+    def _parse_aspects(self, data):
+        aspects = data.get("aspects")
+        if aspects is None:
+            return DEFAULT_ASPECTS
+        if not isinstance(aspects, (list, tuple)) or len(aspects) < 2:
+            raise _BadRequest()
+        for part in aspects:
+            if not isinstance(part, str) or not part or "." in part:
+                raise _BadRequest()
+        aspects = tuple(aspects)
+        if aspects not in self.allowed_aspects:
+            raise _AspectsNotAllowed()
+        return aspects
 
     def _admit(self, identity_hash):
         now = self.clock()

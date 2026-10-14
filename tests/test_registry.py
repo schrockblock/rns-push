@@ -6,7 +6,7 @@ import unittest
 
 import RNS
 
-from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash
+from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash, destination_hash
 from tests.support import FakeClock
 
 H1 = b"\x01" * 16
@@ -130,6 +130,11 @@ class DeliveryHashTests(unittest.TestCase):
         name_hash = RNS.Identity.full_hash(b"lxmf.delivery")[:10]
         expected = RNS.Identity.full_hash(name_hash + identity.hash)[:16]
         self.assertEqual(delivery_hash(identity), expected)
+
+    def test_destination_hash_defaults_to_lxmf_delivery(self):
+        identity = RNS.Identity()
+        self.assertEqual(destination_hash(identity), RNS.Destination.hash(identity, "lxmf", "delivery"))
+        self.assertEqual(destination_hash(identity, ("nbhd", "sync")), RNS.Destination.hash(identity, "nbhd", "sync"))
 
 
 if __name__ == "__main__":

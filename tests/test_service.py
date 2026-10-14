@@ -8,12 +8,13 @@ from unittest import mock
 
 import RNS
 
-from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash
+from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash, destination_hash
 from rns_push.service import REQUEST_WINDOW, RegistrationService, load_or_create_identity, path_interface
 from tests.support import FakeClock
 
 LINK_ID = b"\x77" * 16
 TOKEN = b"\xaa" * 32
+NBHD = ("nbhd", "sync")
 
 
 class FakeServer:
@@ -56,6 +57,7 @@ class ServiceTests(unittest.TestCase):
         self.links = {LINK_ID: FakeLink(self.interface)}
         self.paths = {}
         self.service = RegistrationService(self.server, self.registry, ("co.example.push",), clock=self.clock,
+                                           allowed_aspects=(("lxmf", "delivery"), ("nbhd", "sync")),
                                            find_link=self.links.get,
                                            path_interface=lambda h: self.paths.get(h, (None, None)))
         self.identity = RNS.Identity()
@@ -220,8 +222,55 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(inspect.signature(self.service.handle_register).parameters), 6)
         self.assertEqual(len(inspect.signature(self.service.handle_unregister).parameters), 6)
 
-    def test_aspect_filter_is_lxmf_delivery(self):
-        self.assertEqual(RegistrationService.aspect_filter, "lxmf.delivery")
+    # aspects
+
+    def test_register_without_aspects_is_lxmf_delivery(self):
+        response = self.register()
+        self.assertEqual(response["destination_hash"], delivery_hash(self.identity))
+
+    def test_register_with_nbhd_sync_derives_that_destination(self):
+        nbhd = destination_hash(self.identity, NBHD)
+        response = self.register(self.body(aspects=["nbhd", "sync"]))
+        self.assertEqual(response["destination_hash"], nbhd)
+        self.assertEqual(self.registry.get(nbhd).bundle_id, "co.example.push")
+        self.assertEqual(self.server.binds, [(nbhd, self.interface)])
+
+    def test_both_registrations_of_one_identity_coexist(self):
+        self.register()
+        self.register(self.body(aspects=["nbhd", "sync"], token=b"\xbb" * 32))
+        self.assertEqual(self.registry.get(delivery_hash(self.identity)).token, TOKEN)
+        self.assertEqual(self.registry.get(destination_hash(self.identity, NBHD)).token, b"\xbb" * 32)
+
+    def test_unlisted_aspects_are_refused(self):
+        response = self.register(self.body(aspects=["evil", "thing"]))
+        self.assertEqual(response, {"ok": False, "error": "aspects_not_allowed"})
+        self.assertEqual(self.registry.all(), [])
+
+    def test_malformed_aspects_are_bad_requests(self):
+        for aspects in (["nbhd"], "nbhd.sync", ["nbhd", ""], ["nb.hd", "sync"], ["nbhd", 1], []):
+            with self.subTest(aspects=aspects):
+                self.assertEqual(self.register(self.body(aspects=aspects)), {"ok": False, "error": "bad_request"})
+
+    def test_unregister_with_aspects_removes_only_that_registration(self):
+        self.register()
+        self.register(self.body(aspects=["nbhd", "sync"]))
+        response = self.service.handle_unregister("/unregister", {"v": 1, "aspects": ["nbhd", "sync"]},
+                                                  b"r", LINK_ID, self.identity, 0)
+        self.assertEqual(response, {"ok": True})
+        self.assertIsNone(self.registry.get(destination_hash(self.identity, NBHD)))
+        self.assertIsNotNone(self.registry.get(delivery_hash(self.identity)))
+
+    def test_announce_of_registered_nbhd_sync_rebinds(self):
+        nbhd = destination_hash(self.identity, NBHD)
+        self.register(self.body(aspects=["nbhd", "sync"]))
+        other = FakeInterface()
+        self.server.owned.add(id(other))
+        self.paths[nbhd] = (other, 1)
+        self.service.received_announce(nbhd, self.identity, None)
+        self.assertEqual(self.server.binds[-1], (nbhd, other))
+
+    def test_announce_handler_listens_to_every_aspect(self):
+        self.assertIsNone(RegistrationService.aspect_filter)
 
     # sweep
 

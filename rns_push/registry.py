@@ -41,8 +41,16 @@ class Registration:
                    registered_at=float(item["registered_at"]))
 
 
+DEFAULT_ASPECTS = ("lxmf", "delivery")
+
+
+def destination_hash(identity, aspects=DEFAULT_ASPECTS):
+    """The SINGLE destination `identity` owns under `aspects` (app name first)."""
+    return RNS.Destination.hash(identity, aspects[0], *aspects[1:])
+
+
 def delivery_hash(identity):
-    return RNS.Destination.hash(identity, "lxmf", "delivery")
+    return destination_hash(identity, DEFAULT_ASPECTS)
 
 
 class Registry:
