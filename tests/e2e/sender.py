@@ -1,4 +1,4 @@
-"""Send one packet to the client and report the receipt. argv: configdir client_hex sent_path out_path"""
+"""Send one packet to the client and report the receipt. argv: configdir client_hex sent_path out_path [dotted.aspects]"""
 import json
 import os
 import sys
@@ -17,13 +17,14 @@ def wait_for(condition, timeout, what):
 
 def main():
     configdir, client_hex, sent_path, out_path = sys.argv[1:5]
+    aspects = (sys.argv[5] if len(sys.argv) > 5 else "lxmf.delivery").split(".")
     RNS.Reticulum(configdir=configdir)
     client_hash = bytes.fromhex(client_hex)
     wait_for(lambda: any(getattr(i, "online", False) for i in RNS.Transport.interfaces), 10, "the hub connection")
     RNS.Transport.request_path(client_hash)
     wait_for(lambda: RNS.Transport.has_path(client_hash), 15, "a path to the client")
     destination = RNS.Destination(RNS.Identity.recall(client_hash), RNS.Destination.OUT, RNS.Destination.SINGLE,
-                                  "lxmf", "delivery")
+                                  *aspects)
     receipt = RNS.Packet(destination, b"wake up").send()
     receipt.set_timeout(20)
     with open(sent_path, "w") as f:

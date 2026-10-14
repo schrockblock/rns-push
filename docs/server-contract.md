@@ -36,12 +36,18 @@ RNS.Destination(hub_identity, IN, SINGLE, "rnspush", "registration")
 
 | path | request data | success response |
 |---|---|---|
-| `/register` | `{"v": 1, "token": <bin>, "environment": <str>, "bundle_id": <str>}` | `{"ok": true, "destination_hash": <bin 16>, "expires_at": <int unix seconds>}` |
-| `/unregister` | `{"v": 1}` | `{"ok": true}` |
+| `/register` | `{"v": 1, "token": <bin>, "environment": <str>, "bundle_id": <str>, "aspects": <array of str, optional>}` | `{"ok": true, "destination_hash": <bin 16>, "expires_at": <int unix seconds>}` |
+| `/unregister` | `{"v": 1, "aspects": <array of str, optional>}` | `{"ok": true}` |
 
 - `token`: the APNs device token bytes (msgpack bin, not hex).
 - `environment`: `"production"` or `"sandbox"`.
 - `bundle_id`: the registering app's bundle identifier.
+- `aspects` (optional, both paths): the destination's aspects as an array of strings, app name
+  first (for example `["nbhd", "sync"]`). Default `["lxmf", "delivery"]`. At least two
+  non-empty strings, none containing `.`; anything else is `bad_request`. The destination is
+  derived from the identified identity (§1.3), never supplied by the client. The aspects must be
+  in the hub's `push_aspects` allow-list (default `lxmf.delivery`), otherwise `aspects_not_allowed`.
+  A client may hold one registration per aspects set; `/unregister` removes the one it names.
 - Map keys are msgpack str.
 
 4. The client tears the link down after the response (or on request timeout).
@@ -53,6 +59,7 @@ Failure response: `{"ok": false, "error": <str>}`, with `error` one of:
 | `not_identified` | the link was not identified before the request |
 | `bad_request` | data is not a map, `v` is not 1, a field is missing, the wrong type, or `environment` is not one of the two values |
 | `bundle_not_allowed` | `bundle_id` is not in the hub's allow-list |
+| `aspects_not_allowed` | `aspects` is well-formed but is not in the hub's `push_aspects` allow-list |
 | `not_direct` | the link was not opened by the client itself over one of this hub's spawned client connections (for example, it was relayed through another Reticulum node) |
 | `rate_limited` | more than 10 requests from this identity in the past hour, or (`/register` for an identity not yet registered) the hub already holds its maximum number of registrations |
 
@@ -65,10 +72,12 @@ identified with is the identity being registered. There is no body signature and
 the link's encryption and identification cover authenticity and replay.
 
 The hub derives the destination to wake itself:
-`RNS.Destination.hash(remote_identity, "lxmf", "delivery")`, i.e.
+`RNS.Destination.hash(remote_identity, *aspects)` (`aspects` defaults to `"lxmf", "delivery"`), i.e.
 `identity_hash = SHA-256(public_key)[:16]`,
-`destination_hash = SHA-256(SHA-256("lxmf.delivery")[:10] ‖ identity_hash)[:16]`.
+`destination_hash = SHA-256(SHA-256("lxmf.delivery")[:10] ‖ identity_hash)[:16]` for the default.
 It is returned in the `/register` response so the client can sanity-check it.
+Binding on announce (§2) covers every registered aspect: an announce for any registered
+destination hash binds the announcing connection to it.
 
 ### 1.4 Server rules
 

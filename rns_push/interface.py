@@ -13,7 +13,7 @@ from RNS.Transport import IDX_RT_OUTB_IF
 from .apns import APNsClient, JWTSigner
 from .dispatcher import PushDispatcher
 from .packet import parse_header
-from .registry import Registry
+from .registry import DEFAULT_ASPECTS, Registry
 from .service import DEFAULT_MAX_REGISTRATIONS, RegistrationService, load_or_create_identity
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
@@ -158,6 +158,8 @@ class PushSettings:
     team_id: str
     allowed_bundle_ids: tuple
     max_registrations: int = DEFAULT_MAX_REGISTRATIONS
+    allowed_aspects: tuple = (DEFAULT_ASPECTS,)
+    alert_titles: tuple = ()
 
     @classmethod
     def from_config(cls, c):
@@ -185,7 +187,26 @@ class PushSettings:
             if max_registrations < 1:
                 raise ValueError(f"PushTCPServerInterface needs a positive integer for \"max_registrations\", "
                                  f"not {c['max_registrations']!r}")
-        return cls(key_pem, key_id, team_id, _items(c["allowed_bundle_ids"]), max_registrations)
+        allowed_aspects = (DEFAULT_ASPECTS,)
+        if "push_aspects" in c:
+            parsed = []
+            for item in _items(c["push_aspects"]):
+                parts = tuple(item.split("."))
+                if len(parts) < 2 or any(not p for p in parts):
+                    raise ValueError(f"PushTCPServerInterface: invalid push_aspects entry {item!r}")
+                parsed.append(parts)
+            allowed_aspects = tuple(parsed)
+        alert_titles = ()
+        if "alert_titles" in c:
+            pairs = []
+            for item in _items(c["alert_titles"]):
+                bundle, sep, title = item.partition("=")
+                if not sep or not bundle.strip() or not title.strip():
+                    raise ValueError(f"PushTCPServerInterface: invalid alert_titles entry {item!r}")
+                pairs.append((bundle.strip(), title.strip()))
+            alert_titles = tuple(pairs)
+        return cls(key_pem, key_id, team_id, _items(c["allowed_bundle_ids"]), max_registrations,
+                   allowed_aspects, alert_titles)
 
 
 def make_apns_client(key_pem, key_id, team_id):
@@ -208,9 +229,11 @@ class PushTCPServerInterface(TCPServerInterface):
         self.bindings_lock = threading.RLock()
         self.registry = Registry(os.path.join(self.storage_dir, "registrations.json"))
         self.apns = make_apns_client(settings.key_pem, settings.key_id, settings.team_id)
-        self.dispatcher = PushDispatcher(self.registry, self.apns, self.on_unregistered)
+        self.dispatcher = PushDispatcher(self.registry, self.apns, self.on_unregistered,
+                                         titles=dict(settings.alert_titles))
         self.service = RegistrationService(self, self.registry, settings.allowed_bundle_ids,
-                                           max_registrations=settings.max_registrations)
+                                           max_registrations=settings.max_registrations,
+                                           allowed_aspects=settings.allowed_aspects)
         if self.START_SERVICE:
             threading.Thread(target=self._start_service, daemon=True).start()
 

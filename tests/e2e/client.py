@@ -1,4 +1,6 @@
-"""Play the phone: announce lxmf.delivery, register over a link, exit. argv: configdir identity_path registration_hex out_path"""
+"""Play the phone: announce a destination (default lxmf.delivery), register over a link, exit.
+argv: configdir identity_path registration_hex out_path [--aspects dotted.name]"""
+import argparse
 import json
 import os
 import sys
@@ -16,10 +18,18 @@ def wait_for(condition, timeout, what):
 
 
 def main():
-    configdir, identity_path, registration_hex, out_path = sys.argv[1:5]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("configdir")
+    parser.add_argument("identity_path")
+    parser.add_argument("registration_hex")
+    parser.add_argument("out_path")
+    parser.add_argument("--aspects", default="lxmf.delivery")
+    args = parser.parse_args()
+    configdir, identity_path, registration_hex, out_path = args.configdir, args.identity_path, args.registration_hex, args.out_path
+    aspects = args.aspects.split(".")
     RNS.Reticulum(configdir=configdir)
     identity = RNS.Identity.from_file(identity_path)
-    delivery = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery")
+    delivery = RNS.Destination(identity, RNS.Destination.IN, RNS.Destination.SINGLE, *aspects)
     wait_for(lambda: any(getattr(i, "online", False) for i in RNS.Transport.interfaces), 10, "the hub connection")
     delivery.announce()
 
@@ -33,8 +43,10 @@ def main():
     link.identify(identity)
 
     result = {}
-    link.request("/register",
-                 {"v": 1, "token": bytes.fromhex("ab" * 32), "environment": "sandbox", "bundle_id": "co.example.push"},
+    request = {"v": 1, "token": bytes.fromhex("ab" * 32), "environment": "sandbox", "bundle_id": "co.example.push"}
+    if aspects != ["lxmf", "delivery"]:
+        request["aspects"] = aspects
+    link.request("/register", request,
                  response_callback=lambda receipt: result.update(response=receipt.response),
                  failed_callback=lambda receipt: result.update(failed=True))
     wait_for(lambda: result, 15, "the /register response")

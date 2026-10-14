@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 
-from rns_push.dispatcher import PushDispatcher
+from rns_push.dispatcher import PushDispatcher, build_payload
 from rns_push.registry import Registration, Registry
 from tests.support import FakeAPNs, FakeClock
 
@@ -60,6 +60,20 @@ class DispatcherTests(unittest.TestCase):
         expected = (b'{"aps":{"alert":{"title":"New message"},"mutable-content":1,"content-available":1},'
                     b'"rns":{"v":1,"packets":["AQID"]}}')
         self.assertEqual(self.apns.sends, [("sandbox", TOKEN.hex(), "co.example.push", DEST.hex(), expected)])
+
+    def test_bundle_title_overrides_the_default(self):
+        dispatcher = PushDispatcher(self.registry, self.apns, self.unregistered.append, clock=self.clock,
+                                    sleep=lambda s: None, start_thread=False,
+                                    titles={"co.example.push": "Neighborhood activity"})
+        dispatcher.enqueue(DEST, b"\x01" * 40)
+        dispatcher.step()
+        self.clock.advance(0.6)
+        dispatcher.step()
+        payload = json.loads(self.apns.sends[-1][4])
+        self.assertEqual(payload["aps"]["alert"]["title"], "Neighborhood activity")
+
+    def test_unknown_bundle_keeps_new_message(self):
+        self.assertEqual(json.loads(build_payload(["AA=="]))["aps"]["alert"]["title"], "New message")
 
     def test_eight_packets_flush_immediately(self):
         for i in range(9):

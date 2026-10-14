@@ -128,6 +128,30 @@ class ServerInterfaceTests(unittest.TestCase):
         server = self.make_server(max_registrations="7")
         self.assertEqual(server.service.max_registrations, 7)
 
+    def settings(self, **overrides):
+        return PushSettings.from_config(Interface.get_config_obj(self.config(**overrides)))
+
+    def test_push_aspects_default_and_parse(self):
+        self.assertEqual(self.settings().allowed_aspects, (("lxmf", "delivery"),))
+        settings = self.settings(push_aspects="lxmf.delivery, nbhd.sync")
+        self.assertEqual(settings.allowed_aspects, (("lxmf", "delivery"), ("nbhd", "sync")))
+
+    def test_malformed_push_aspects_are_refused(self):
+        for value in ("nbhd", "nbhd..sync", ".sync"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.settings(push_aspects=value)
+
+    def test_alert_titles_parse(self):
+        settings = self.settings(alert_titles="co.lithobyte.Nbhd=Neighborhood activity")
+        self.assertEqual(dict(settings.alert_titles), {"co.lithobyte.Nbhd": "Neighborhood activity"})
+        with self.assertRaises(ValueError):
+            self.settings(alert_titles="no-equals-sign")
+
+    def test_aspects_and_titles_reach_service_and_dispatcher(self):
+        server = self.make_server(push_aspects="lxmf.delivery, nbhd.sync", alert_titles="co.example.push=Hi")
+        self.assertIn(("nbhd", "sync"), server.service.allowed_aspects)
+        self.assertEqual(server.dispatcher.titles, {"co.example.push": "Hi"})
+
     def test_state_lives_under_the_storage_path(self):
         server = self.make_server()
         self.assertEqual(server.registry.path, os.path.join(self.dir, "rns_push", "registrations.json"))

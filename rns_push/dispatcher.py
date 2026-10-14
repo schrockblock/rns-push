@@ -17,8 +17,8 @@ PUSH_TITLE = "New message"
 UNREGISTERED_REASONS = ("BadDeviceToken", "DeviceTokenNotForTopic")
 
 
-def build_payload(packets_b64):
-    return json.dumps({"aps": {"alert": {"title": PUSH_TITLE}, "mutable-content": 1, "content-available": 1},
+def build_payload(packets_b64, title=PUSH_TITLE):
+    return json.dumps({"aps": {"alert": {"title": title},"mutable-content": 1, "content-available": 1},
                        "rns": {"v": 1, "packets": list(packets_b64)}},
                       separators=(",", ":")).encode("utf-8")
 
@@ -34,7 +34,9 @@ class PushDispatcher:
     """Turns packets handed to dormant interfaces into APNs pushes. enqueue() never blocks;
     a single worker thread batches, rate-limits and sends."""
 
-    def __init__(self, registry, apns, on_unregistered, clock=time.monotonic, sleep=time.sleep, start_thread=True):
+    def __init__(self, registry, apns, on_unregistered, clock=time.monotonic, sleep=time.sleep, start_thread=True,
+                 titles=None):
+        self.titles = dict(titles or {})
         self.registry = registry
         self.apns = apns
         self.on_unregistered = on_unregistered
@@ -117,7 +119,7 @@ class PushDispatcher:
             RNS.log(f"Push rate limit reached for {RNS.prettyhexrep(destination_hash)}, dropping", RNS.LOG_DEBUG)
             return
         history.append(now)
-        self._send(registration, build_payload(batch.packets))
+        self._send(registration, build_payload(batch.packets, self.titles.get(registration.bundle_id, PUSH_TITLE)))
 
     def _send(self, registration, payload):
         arguments = (registration.environment, registration.token.hex(), registration.bundle_id,

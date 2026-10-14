@@ -47,6 +47,10 @@ In the Reticulum `config`:
     apns_key_id = ABC123
     apns_team_id = TEAM123456
     allowed_bundle_ids = co.lithobyte.ReTiCaMsgr
+    # optional: destinations clients may register, as dotted aspects (default lxmf.delivery)
+    push_aspects = lxmf.delivery, nbhd.sync
+    # optional: per-bundle banner title, bundle=title (default "New message")
+    alert_titles = co.lithobyte.Nbhd=Neighborhood activity
 ```
 
 All `TCPServerInterface` options work except IFAC (`network_name`, `passphrase`, `ifac_size`),

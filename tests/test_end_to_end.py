@@ -15,7 +15,7 @@ import RNS
 from RNS.Interfaces.TCPInterface import HDLC
 
 from rns_push import cli
-from rns_push.registry import delivery_hash
+from rns_push.registry import delivery_hash, destination_hash
 from tests.support import p256_pem
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +39,7 @@ HUB_CONFIG = """[reticulum]
     apns_key_id = KEY1234567
     apns_team_id = TEAM123456
     allowed_bundle_ids = co.example.push
+    push_aspects = lxmf.delivery, nbhd.sync
 """
 
 CLIENT_CONFIG = """[reticulum]
@@ -114,8 +115,11 @@ class EndToEndTest(unittest.TestCase):
     def spawn(self, name, *args):
         log = open(os.path.join(self.dir, f"{name}.log"), "w")
         self.addCleanup(log.close)
+        # The children must import the same rns_push as this test, not whichever copy is installed.
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [os.path.dirname(TESTS_DIR),
+                                                                        os.environ.get("PYTHONPATH")])))
         process = subprocess.Popen([sys.executable, os.path.join(E2E, f"{name}.py"), *args],
-                                   stdout=log, stderr=subprocess.STDOUT)
+                                   stdout=log, stderr=subprocess.STDOUT, env=env)
         self.processes.append(process)
         return process
 
@@ -152,6 +156,31 @@ class EndToEndTest(unittest.TestCase):
 
         receipt = json.loads(wait_for_file(self.path("receipt.json"), 30))
         self.assertEqual(receipt["status"], RNS.PacketReceipt.DELIVERED, "see hub.log and sender.log")
+
+    def test_nbhd_sync_packet_is_pushed(self):
+        self.spawn("hub", self.hub_dir, self.path("pushes.jsonl"), self.path("ready.json"), self.path("dormant.json"))
+        registration_hex = json.loads(wait_for_file(self.path("ready.json"), 30))["registration_hash"]
+
+        client = self.spawn("client", self.client_dir, self.identity_path, registration_hex, self.path("registered.json"),
+                            "--aspects", "nbhd.sync")
+        self.assertEqual(client.wait(timeout=60), 0, "client failed, see client.log")
+        sync_hex = destination_hash(self.identity, ("nbhd", "sync")).hex()
+        self.assertNotEqual(sync_hex, delivery_hash(self.identity).hex())
+        registered = json.loads(wait_for_file(self.path("registered.json"), 5))
+        self.assertEqual(registered, {"ok": True, "error": None, "destination_hash": sync_hex})
+        dormant = json.loads(wait_for_file(self.path("dormant.json"), 15))
+        self.assertEqual(dormant, {"bound_hash": sync_hex}, "the hub never went dormant, see hub.log")
+
+        self.spawn("sender", self.sender_dir, sync_hex, self.path("sent.json"), self.path("receipt.json"), "nbhd.sync")
+        wait_for_file(self.path("sent.json"), 40)
+        push = json.loads(wait_for_file(self.path("pushes.jsonl"), 20).splitlines()[0])
+        self.assertEqual(push["topic"], "co.example.push")
+        self.assertEqual(push["collapse_id"], sync_hex)
+        payload = json.loads(push["payload"])
+        raw = base64.b64decode(payload["rns"]["packets"][0])
+        packet = RNS.Packet(None, raw)
+        packet.unpack()
+        self.assertEqual(packet.destination_hash.hex(), sync_hex)
 
 
 if __name__ == "__main__":
