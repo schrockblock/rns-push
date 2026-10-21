@@ -10,6 +10,7 @@ WINDOW = 0.5
 MAX_PACKETS = 8
 MAX_B64 = 3500
 RATE_LIMIT = 20
+SILENT_RATE_LIMIT = 6
 RATE_WINDOW = 60.0
 QUEUE_CAP = 1024
 RETRY_DELAY = 1.0
@@ -75,7 +76,7 @@ class PushDispatcher:
         with self._lock:
             if len(self._queue) >= QUEUE_CAP:
                 self._queue.popleft()
-                RNS.log("Push queue is full, dropping the oldest packet", RNS.LOG_WARNING)
+                RNS.log("Push queue is full, dropping the oldest push request", RNS.LOG_WARNING)
             self._queue.append(item)
         self._wake.set()
 
@@ -132,7 +133,7 @@ class PushDispatcher:
     def _flush(self, key):
         batch = self._batches.pop(key)
         destination_hash, silent = key
-        registration = self._admit(destination_hash)
+        registration = self._admit(destination_hash, silent)
         if registration is None:
             return
         if silent:
@@ -142,24 +143,25 @@ class PushDispatcher:
                        registration.destination_hash.hex())
 
     def _push_propagated(self, destination_hash):
-        registration = self._admit(destination_hash)
+        registration = self._admit(destination_hash, False)
         if registration is not None:
             self._send(registration, build_propagated_payload(self._title(registration)), "alert", 10, None)
 
     def _title(self, registration):
         return self.titles.get(registration.bundle_id, PUSH_TITLE)
 
-    def _admit(self, destination_hash):
-        """The registration to push to, or None when it is gone or over its rate limit."""
+    def _admit(self, destination_hash, silent):
+        """The registration to push to, or None when it is gone or over its rate limit. Silent
+        pushes are budgeted apart from alerts, so link attempts cannot starve a message's buzz."""
         registration = self.registry.get(destination_hash)
         if registration is None:
             RNS.log(f"Dropping push for unregistered {RNS.prettyhexrep(destination_hash)}", RNS.LOG_DEBUG)
             return None
         now = self.clock()
-        history = self._history[destination_hash]
+        history = self._history[(destination_hash, silent)]
         while history and now - history[0] >= RATE_WINDOW:
             history.popleft()
-        if len(history) >= RATE_LIMIT:
+        if len(history) >= (SILENT_RATE_LIMIT if silent else RATE_LIMIT):
             RNS.log(f"Push rate limit reached for {RNS.prettyhexrep(destination_hash)}, dropping", RNS.LOG_DEBUG)
             return None
         history.append(now)

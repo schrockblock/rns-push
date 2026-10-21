@@ -117,6 +117,24 @@ class DispatcherTests(unittest.TestCase):
             self.dispatcher.step()
         self.assertEqual(len(self.apns.sends), 20)
 
+    def test_silent_pushes_never_starve_alerts(self):
+        for _ in range(25):
+            self.dispatcher.enqueue(DEST, b"\x01", silent=True)
+            self.dispatcher.step()
+            self.clock.advance(0.5)
+            self.dispatcher.step()
+        self.dispatcher.enqueue_propagated(DEST)
+        self.dispatcher.step()
+        self.assertEqual(self.apns.sends[-1][5], "alert")
+
+    def test_silent_pushes_have_their_own_cap(self):
+        for _ in range(7):
+            self.dispatcher.enqueue(DEST, b"\x01", silent=True)
+            self.dispatcher.step()
+            self.clock.advance(0.5)
+            self.dispatcher.step()
+        self.assertEqual(len(self.apns.sends), 6)
+
     def test_unregistered_destination_not_pushed(self):
         self.dispatcher.enqueue_propagated(OTHER)
         self.dispatcher.step()

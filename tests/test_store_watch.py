@@ -5,6 +5,8 @@ import threading
 import unittest
 from unittest import mock
 
+import RNS
+
 from rns_push.registry import Registration, Registry
 from rns_push.store_watch import MessageStoreWatcher
 from tests.support import FakeClock
@@ -109,14 +111,32 @@ class MessageStoreWatcherTests(unittest.TestCase):
         missing = os.path.join(self._tmp.name, "later")
         watcher = MessageStoreWatcher(missing, self.registry, self.arrivals.append, clock=self.clock)
         with mock.patch("rns_push.store_watch.RNS.log") as log:
+            def warnings():
+                return [c for c in log.call_args_list if c.args[1] == RNS.LOG_WARNING]
             watcher.poll()
             watcher.poll()
-            self.assertEqual(log.call_count, 1)
+            self.assertEqual(len(warnings()), 1)
             os.mkdir(missing)
             watcher.poll()
             os.rmdir(missing)
             watcher.poll()
-            self.assertEqual(log.call_count, 2)
+            self.assertEqual(len(warnings()), 2)
+
+    def test_baseline_is_announced(self):
+        self.add("aa_1")
+        self.add("bb_2")
+        with mock.patch("rns_push.store_watch.RNS.log") as log:
+            self.watcher.poll()
+        log.assert_called_once_with(f"Watching 2 messages in {self.store}", RNS.LOG_NOTICE)
+
+    def test_non_hex_names_are_ignored(self):
+        self.watcher.poll()
+        self.add("zz_1")
+        self.add("not-hex_2")
+        self.add("abc_3")  # odd length is not a transient id either
+        self.assertEqual(self.watcher.poll(), 0)
+        self.assertEqual(self.arrivals, [])
+        self.assertEqual(self.watcher._seen, {})
 
     def test_half_written_file_arrives_once_complete(self):
         self.watcher.poll()

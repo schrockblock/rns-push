@@ -256,6 +256,9 @@ class PushTCPServerInterface(TCPServerInterface):
             self.service.start(load_or_create_identity(os.path.join(self.storage_dir, "identity")))
         except Exception as e:
             RNS.log(f"Could not start the push registration service: {e}", RNS.LOG_ERROR)
+        # Detaching while the service started would otherwise leave a watcher nobody stops.
+        if self.detached:
+            return
         if self.store_watcher is not None:
             self.store_watcher.start()
 

@@ -45,7 +45,7 @@ class MessageStoreWatcher:
     def stop(self):
         self._stopped.set()
         if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join()
+            self._thread.join(timeout=5.0)
 
     def poll(self):
         """One pass over the store. Returns the number of arrivals reported."""
@@ -63,11 +63,21 @@ class MessageStoreWatcher:
             return 0
         try:
             with os.scandir(self.path) as entries:
-                listed = {}
+                # Ids are kept as bytes and names only for unseen ids: the store is huge, and
+                # a string per file would cost a router most of its memory.
+                listed = set()
+                unseen = {}
                 for entry in entries:
                     transient_id, separator, _ = entry.name.partition("_")
-                    if separator:
-                        listed[transient_id] = entry.name
+                    if not separator:
+                        continue
+                    try:
+                        transient_id = bytes.fromhex(transient_id)
+                    except ValueError:
+                        continue
+                    listed.add(transient_id)
+                    if self._baselined and transient_id not in self._seen:
+                        unseen[transient_id] = entry.name
         except OSError as e:
             self._fail(e)
             return 0
@@ -80,10 +90,9 @@ class MessageStoreWatcher:
             self._baselined = True
             for transient_id in listed:
                 self._seen[transient_id] = now
+            RNS.log(f"Watching {len(listed)} messages in {self.path}", RNS.LOG_NOTICE)
         else:
-            for transient_id, name in listed.items():
-                if transient_id in self._seen:
-                    continue
+            for transient_id, name in unseen.items():
                 head = self._read_head(name)
                 if head is not None and len(head) < HASH_LENGTH:
                     # Still being written: leave it unseen so the next listing retries it, but
@@ -95,6 +104,7 @@ class MessageStoreWatcher:
                 self._short.pop(transient_id, None)
                 self._seen[transient_id] = now
                 if head is not None and len(head) == HASH_LENGTH and self.registry.get(head) is not None:
+                    RNS.log(f"Message arrived for {RNS.prettyhexrep(head)}", RNS.LOG_VERBOSE)
                     self.on_arrival(head)
                     arrivals += 1
             stale = [t for t, at in self._seen.items() if t not in listed and now - at >= self.seen_ttl]

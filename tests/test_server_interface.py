@@ -174,6 +174,14 @@ class ServerInterfaceTests(unittest.TestCase):
         server.detach()
         self.assertFalse(thread.is_alive())
 
+    def test_detach_during_start_leaves_no_watcher(self):
+        server = self.make_server(propagation_store=os.path.join(self.dir, "messagestore"))
+        with mock.patch.object(RNS.Transport, "ready", True, create=True), \
+                mock.patch.object(server.service, "start", side_effect=lambda *args: server.detach()):
+            server._start_service()
+        self.assertTrue(server.detached)
+        self.assertIsNone(server.store_watcher._thread)
+
     def test_no_watcher_without_the_key(self):
         server = self.make_server()
         self.assertIsNone(server.store_watcher)
