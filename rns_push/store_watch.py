@@ -12,31 +12,49 @@ class MessageStoreWatcher:
 
     Each file is named `<transient id>_<received>[_<stamp value>]` and begins with the
     recipient's 16-byte delivery destination hash, unencrypted. The store holds on the order
-    of 200k files on a router, so an unchanged directory mtime skips the listing entirely."""
+    of 200k files on a router, so an unchanged directory mtime skips the listing entirely.
 
-    def __init__(self, path, registry, on_arrival, clock=time.time, interval=3.0, seen_ttl=86400.0):
+    `clock` times the `seen` TTL, a duration, so it is monotonic; `wall_clock` is compared
+    with the directory's mtime."""
+
+    def __init__(self, path, registry, on_arrival, clock=time.monotonic, interval=3.0, seen_ttl=86400.0,
+                 wall_clock=time.time):
         self.path = path
         self.registry = registry
         self.on_arrival = on_arrival
         self.clock = clock
+        self.wall_clock = wall_clock
         self.interval = interval
         self.seen_ttl = seen_ttl
         self._seen = {}
         self._baselined = False
         self._dir_mtime_ns = None
+        self._unavailable = False
         self._stopped = threading.Event()
+        self._thread = None
 
     def start(self):
-        threading.Thread(target=self._loop, daemon=True).start()
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stopped.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
 
     def stop(self):
         self._stopped.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join()
 
     def poll(self):
         """One pass over the store. Returns the number of arrivals reported."""
         try:
             mtime_ns = os.stat(self.path).st_mtime_ns
-        except OSError:
+        except OSError as e:
+            self._fail(e)
+            # A store that comes back is a new one: baseline it rather than push all of it.
+            self._baselined = False
+            self._dir_mtime_ns = None
+            self._seen.clear()
             return 0
         if mtime_ns == self._dir_mtime_ns:
             return 0
@@ -47,38 +65,52 @@ class MessageStoreWatcher:
                     transient_id, separator, _ = entry.name.partition("_")
                     if separator:
                         listed[transient_id] = entry.name
-        except OSError:
+        except OSError as e:
+            self._fail(e)
             return 0
-        # Taken before the listing, so a file added during it is seen on the next pass.
-        self._dir_mtime_ns = mtime_ns
+        self._unavailable = False
 
         now = self.clock()
         arrivals = 0
+        incomplete = False
         if not self._baselined:
             self._baselined = True
             for transient_id in listed:
                 self._seen[transient_id] = now
-            return 0
-        for transient_id, name in listed.items():
-            if transient_id in self._seen:
-                continue
-            self._seen[transient_id] = now
-            destination_hash = self._recipient(name)
-            if destination_hash is not None and self.registry.get(destination_hash) is not None:
-                self.on_arrival(destination_hash)
-                arrivals += 1
-        stale = [t for t, at in self._seen.items() if t not in listed and now - at >= self.seen_ttl]
-        for transient_id in stale:
-            del self._seen[transient_id]
+        else:
+            for transient_id, name in listed.items():
+                if transient_id in self._seen:
+                    continue
+                head = self._read_head(name)
+                if head is not None and len(head) < HASH_LENGTH:
+                    # Still being written: leave it unseen so the next listing retries it.
+                    incomplete = True
+                    continue
+                self._seen[transient_id] = now
+                if head is not None and self.registry.get(head) is not None:
+                    self.on_arrival(head)
+                    arrivals += 1
+            stale = [t for t, at in self._seen.items() if t not in listed and now - at >= self.seen_ttl]
+            for transient_id in stale:
+                del self._seen[transient_id]
+        # Taken before the listing, so a file added during it is seen on the next pass. Not
+        # cached while too recent: a file landing in the same mtime tick would leave it unchanged.
+        recent = self.wall_clock() - mtime_ns / 1e9 < max(2.0, self.interval)
+        self._dir_mtime_ns = None if recent or incomplete else mtime_ns
         return arrivals
 
-    def _recipient(self, name):
+    def _read_head(self, name):
+        """The file's first bytes, or None if it vanished or cannot be read."""
         try:
             with open(os.path.join(self.path, name), "rb") as f:
-                head = f.read(HASH_LENGTH)
+                return f.read(HASH_LENGTH)
         except OSError:
             return None
-        return head if len(head) == HASH_LENGTH else None
+
+    def _fail(self, error):
+        if not self._unavailable:
+            self._unavailable = True
+            RNS.log(f"Message store {self.path} is unavailable: {error}", RNS.LOG_WARNING)
 
     def _loop(self):
         while not self._stopped.is_set():

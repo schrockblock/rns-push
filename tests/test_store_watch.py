@@ -1,5 +1,7 @@
 import os
+import shutil
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -71,6 +73,7 @@ class MessageStoreWatcherTests(unittest.TestCase):
         self.assertEqual(self.arrivals, [REGISTERED])
 
     def test_unchanged_directory_skips_listing(self):
+        self.bump(self.store)  # old enough to be cached
         real_scandir = os.scandir
         with mock.patch("os.scandir", side_effect=real_scandir) as scandir:
             self.watcher.poll()
@@ -87,6 +90,64 @@ class MessageStoreWatcherTests(unittest.TestCase):
         os.symlink(os.path.join(self._tmp.name, "nowhere"), os.path.join(self.store, "dd_3"))
         self.bump(self.store)
         self.assertEqual(watcher.poll(), 0)
+        self.assertEqual(self.arrivals, [])
+
+    def test_same_tick_arrival_is_not_hidden(self):
+        wall = FakeClock(100.5)
+        watcher = MessageStoreWatcher(self.store, self.registry, self.arrivals.append, clock=self.clock,
+                                      wall_clock=wall)
+        stamp = 100 * 10**9
+        os.utime(self.store, ns=(stamp, stamp))
+        watcher.poll()
+        with open(os.path.join(self.store, "bb_2"), "wb") as f:
+            f.write(REGISTERED * 2)
+        os.utime(self.store, ns=(stamp, stamp))
+        self.assertEqual(watcher.poll(), 1)
+        self.assertEqual(self.arrivals, [REGISTERED])
+
+    def test_unavailable_store_logs_once(self):
+        missing = os.path.join(self._tmp.name, "later")
+        watcher = MessageStoreWatcher(missing, self.registry, self.arrivals.append, clock=self.clock)
+        with mock.patch("rns_push.store_watch.RNS.log") as log:
+            watcher.poll()
+            watcher.poll()
+            self.assertEqual(log.call_count, 1)
+            os.mkdir(missing)
+            watcher.poll()
+            os.rmdir(missing)
+            watcher.poll()
+            self.assertEqual(log.call_count, 2)
+
+    def test_half_written_file_arrives_once_complete(self):
+        self.watcher.poll()
+        self.write(self.store, "cc_2", REGISTERED[:5])
+        self.assertEqual(self.watcher.poll(), 0)
+        self.write(self.store, "cc_2", REGISTERED * 2)
+        self.assertEqual(self.watcher.poll(), 1)
+        self.assertEqual(self.watcher.poll(), 0)
+        self.assertEqual(self.arrivals, [REGISTERED])
+
+    def test_start_twice_runs_one_poller(self):
+        with mock.patch("threading.Thread", wraps=threading.Thread) as thread:
+            self.watcher.start()
+            self.watcher.start()
+            self.assertEqual(thread.call_count, 1)
+            self.watcher.stop()
+            self.assertFalse(self.watcher._thread.is_alive())
+            self.watcher.start()
+            self.assertEqual(thread.call_count, 2)
+            self.assertTrue(self.watcher._thread.is_alive())
+            self.watcher.stop()
+
+    def test_recreated_store_is_a_fresh_baseline(self):
+        self.add("aa_1")
+        self.watcher.poll()
+        shutil.rmtree(self.store)
+        self.assertEqual(self.watcher.poll(), 0)
+        os.mkdir(self.store)
+        self.add("aa_1")
+        self.add("bb_2")
+        self.assertEqual(self.watcher.poll(), 0)
         self.assertEqual(self.arrivals, [])
 
     def test_missing_store_retries_quietly(self):
