@@ -59,7 +59,7 @@ class DispatcherTests(unittest.TestCase):
         self.flush_one(b"\x01\x02\x03")
         expected = (b'{"aps":{"alert":{"title":"New message"},"mutable-content":1,"content-available":1},'
                     b'"rns":{"v":1,"packets":["AQID"]}}')
-        self.assertEqual(self.apns.sends, [("sandbox", TOKEN.hex(), "co.example.push", DEST.hex(), expected)])
+        self.assertEqual(self.apns.sends, [("sandbox", TOKEN.hex(), "co.example.push", DEST.hex(), expected, "alert", 10)])
 
     def test_bundle_title_overrides_the_default(self):
         dispatcher = PushDispatcher(self.registry, self.apns, self.unregistered.append, clock=self.clock,

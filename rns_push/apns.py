@@ -126,14 +126,17 @@ class APNsClient:
         self.clock = clock
         self._connections = {}
 
-    def send(self, environment, token_hex, topic, collapse_id, payload):
+    def send(self, environment, token_hex, topic, collapse_id, payload,
+             push_type="alert", priority=10):
         host = HOSTS[environment]
         headers = [(":method", "POST"), (":scheme", "https"), (":authority", host),
                    (":path", f"/3/device/{token_hex}"),
                    ("authorization", f"bearer {self.signer.token()}"),
-                   ("apns-push-type", "alert"), ("apns-priority", "10"),
-                   ("apns-topic", topic), ("apns-collapse-id", collapse_id),
-                   ("content-type", "application/json"), ("content-length", str(len(payload)))]
+                   ("apns-push-type", push_type), ("apns-priority", str(priority)),
+                   ("apns-topic", topic)]
+        if collapse_id is not None:
+            headers.append(("apns-collapse-id", collapse_id))
+        headers += [("content-type", "application/json"), ("content-length", str(len(payload)))]
         try:
             connection = self._connection(environment, host)
             status, body = connection.request(headers, payload)

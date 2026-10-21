@@ -64,8 +64,10 @@ class FakeAPNs:
         self.invalidations = 0
         self.closed = False
 
-    def send(self, environment, token_hex, topic, collapse_id, payload):
-        self.sends.append((environment, token_hex, topic, collapse_id, payload))
+    def send(self, environment, token_hex, topic, collapse_id, payload,
+             push_type="alert", priority=10):
+        self.sends.append((environment, token_hex, topic, collapse_id, payload,
+                           push_type, priority))
         return self.responses.pop(0) if self.responses else (200, None)
 
     def invalidate_token(self):

@@ -88,6 +88,21 @@ class APNsClientTests(unittest.TestCase):
         self.assertEqual(body, b'{"x":1}')
         self.assertEqual(self.server.hosts, ["api.sandbox.push.apple.com"])
 
+    def test_background_push_headers(self):
+        self.client.send("sandbox", "abcd", "co.example.push", None, b'{"x":1}',
+                         push_type="background", priority=5)
+        headers, _ = self.server.requests[0]
+        self.assertEqual(headers["apns-push-type"], "background")
+        self.assertEqual(headers["apns-priority"], "5")
+        self.assertNotIn("apns-collapse-id", headers)
+
+    def test_default_headers_unchanged(self):
+        self.send()
+        headers, _ = self.server.requests[0]
+        self.assertEqual(headers["apns-push-type"], "alert")
+        self.assertEqual(headers["apns-priority"], "10")
+        self.assertEqual(headers["apns-collapse-id"], "0011")
+
     def test_production_uses_the_production_host(self):
         self.send("production")
         self.assertEqual(self.server.hosts, ["api.push.apple.com"])
