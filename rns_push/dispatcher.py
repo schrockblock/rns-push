@@ -23,6 +23,18 @@ def build_payload(packets_b64, title=PUSH_TITLE):
                       separators=(",", ":")).encode("utf-8")
 
 
+def build_silent_payload(packets_b64):
+    return json.dumps({"aps": {"content-available": 1},
+                       "rns": {"v": 1, "packets": list(packets_b64)}},
+                      separators=(",", ":")).encode("utf-8")
+
+
+def build_propagated_payload(title=PUSH_TITLE):
+    return json.dumps({"aps": {"alert": {"title": title}, "mutable-content": 1, "content-available": 1},
+                       "rns": {"v": 1, "kind": "propagated", "packets": []}},
+                      separators=(",", ":")).encode("utf-8")
+
+
 class _Batch:
     def __init__(self, opened):
         self.opened = opened
@@ -51,12 +63,20 @@ class PushDispatcher:
         if start_thread:
             threading.Thread(target=self._run, daemon=True).start()
 
-    def enqueue(self, destination_hash, raw):
+    def enqueue(self, destination_hash, raw, silent=False):
+        self._put((destination_hash, raw, silent))
+
+    def enqueue_propagated(self, destination_hash):
+        """Asks for a push telling the phone to fetch from its propagation node. Safe from any
+        thread; the dispatcher thread is still the only one that talks to APNs."""
+        self._put((destination_hash, None, False))
+
+    def _put(self, item):
         with self._lock:
             if len(self._queue) >= QUEUE_CAP:
                 self._queue.popleft()
                 RNS.log("Push queue is full, dropping the oldest packet", RNS.LOG_WARNING)
-            self._queue.append((destination_hash, raw))
+            self._queue.append(item)
         self._wake.set()
 
     def step(self):
@@ -65,11 +85,14 @@ class PushDispatcher:
         with self._lock:
             items = list(self._queue)
             self._queue.clear()
-        for destination_hash, raw in items:
-            self._add(destination_hash, raw)
+        for destination_hash, raw, silent in items:
+            if raw is None:
+                self._push_propagated(destination_hash)
+            else:
+                self._add(destination_hash, raw, silent)
         now = self.clock()
-        for destination_hash in [h for h, b in self._batches.items() if now - b.opened >= WINDOW]:
-            self._flush(destination_hash)
+        for key in [k for k, b in self._batches.items() if now - b.opened >= WINDOW]:
+            self._flush(key)
         if not self._batches:
             return None
         return max(0.0, min(b.opened for b in self._batches.values()) + WINDOW - self.clock())
@@ -91,39 +114,60 @@ class PushDispatcher:
                 RNS.log(f"Push dispatcher error: {e}", RNS.LOG_ERROR)
                 timeout = WINDOW
 
-    def _add(self, destination_hash, raw):
+    def _add(self, destination_hash, raw, silent):
+        key = (destination_hash, silent)
         entry = base64.b64encode(raw).decode("ascii")
-        batch = self._batches.get(destination_hash)
+        batch = self._batches.get(key)
         if batch is not None and batch.size + len(entry) > MAX_B64:
-            self._flush(destination_hash)
+            self._flush(key)
             batch = None
         if batch is None:
             batch = _Batch(self.clock())
-            self._batches[destination_hash] = batch
+            self._batches[key] = batch
         batch.packets.append(entry)
         batch.size += len(entry)
         if len(batch.packets) >= MAX_PACKETS:
-            self._flush(destination_hash)
+            self._flush(key)
 
-    def _flush(self, destination_hash):
-        batch = self._batches.pop(destination_hash)
+    def _flush(self, key):
+        batch = self._batches.pop(key)
+        destination_hash, silent = key
+        registration = self._admit(destination_hash)
+        if registration is None:
+            return
+        if silent:
+            self._send(registration, build_silent_payload(batch.packets), "background", 5, None)
+        else:
+            self._send(registration, build_payload(batch.packets, self._title(registration)), "alert", 10,
+                       registration.destination_hash.hex())
+
+    def _push_propagated(self, destination_hash):
+        registration = self._admit(destination_hash)
+        if registration is not None:
+            self._send(registration, build_propagated_payload(self._title(registration)), "alert", 10, None)
+
+    def _title(self, registration):
+        return self.titles.get(registration.bundle_id, PUSH_TITLE)
+
+    def _admit(self, destination_hash):
+        """The registration to push to, or None when it is gone or over its rate limit."""
         registration = self.registry.get(destination_hash)
         if registration is None:
             RNS.log(f"Dropping push for unregistered {RNS.prettyhexrep(destination_hash)}", RNS.LOG_DEBUG)
-            return
+            return None
         now = self.clock()
         history = self._history[destination_hash]
         while history and now - history[0] >= RATE_WINDOW:
             history.popleft()
         if len(history) >= RATE_LIMIT:
             RNS.log(f"Push rate limit reached for {RNS.prettyhexrep(destination_hash)}, dropping", RNS.LOG_DEBUG)
-            return
+            return None
         history.append(now)
-        self._send(registration, build_payload(batch.packets, self.titles.get(registration.bundle_id, PUSH_TITLE)))
+        return registration
 
-    def _send(self, registration, payload):
+    def _send(self, registration, payload, push_type, priority, collapse_id):
         arguments = (registration.environment, registration.token.hex(), registration.bundle_id,
-                     registration.destination_hash.hex(), payload)
+                     collapse_id, payload, push_type, priority)
         status, reason = self.apns.send(*arguments)
         if status == 0 or status == 429 or status >= 500:
             self.sleep(RETRY_DELAY)

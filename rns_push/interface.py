@@ -92,7 +92,8 @@ class PushClientInterface(TCPClientInterface):
         try:
             header = parse_header(data)
             if header is not None and header.destination_hash == self.bound_hash and header.packet_type in PUSHABLE_TYPES:
-                self.push_server.dispatcher.enqueue(header.destination_hash, data)
+                self.push_server.dispatcher.enqueue(header.destination_hash, data,
+                                                    silent=header.packet_type == RNS.Packet.LINKREQUEST)
         except Exception as e:
             RNS.log(f"Could not queue a push from {self}: {e}", RNS.LOG_ERROR)
 

@@ -27,9 +27,11 @@ class FakeOwner:
 class FakeDispatcher:
     def __init__(self):
         self.enqueued = []
+        self.silent = []
 
-    def enqueue(self, destination_hash, raw):
+    def enqueue(self, destination_hash, raw, silent=False):
         self.enqueued.append((destination_hash, raw))
+        self.silent.append(silent)
 
 
 class FakeServer:
@@ -150,6 +152,12 @@ class ClientInterfaceTests(unittest.TestCase):
         interface.process_outgoing(data)
         interface.process_outgoing(link_request)
         self.assertEqual(self.server.dispatcher.enqueued, [(DEST, data), (DEST, link_request)])
+
+    def test_dormant_link_request_enqueued_silent(self):
+        interface = self.dormant()
+        interface.process_outgoing(make_raw(RNS.Packet.LINKREQUEST, DEST))
+        interface.process_outgoing(make_raw(RNS.Packet.DATA, DEST))
+        self.assertEqual(self.server.dispatcher.silent, [True, False])
 
     def test_dormant_pushes_header_2_packets(self):
         interface = self.dormant()

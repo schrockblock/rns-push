@@ -16,10 +16,11 @@ class FileAPNs:
     def __init__(self, path):
         self.path = path
 
-    def send(self, environment, token_hex, topic, collapse_id, payload):
+    def send(self, environment, token_hex, topic, collapse_id, payload, push_type="alert", priority=10):
         with open(self.path, "a") as f:
             f.write(json.dumps({"environment": environment, "token": token_hex, "topic": topic,
-                                "collapse_id": collapse_id, "payload": payload.decode("utf-8")}) + "\n")
+                                "collapse_id": collapse_id, "payload": payload.decode("utf-8"),
+                                "push_type": push_type, "priority": priority}) + "\n")
         return 200, None
 
     def invalidate_token(self):

@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 
-from rns_push.dispatcher import PushDispatcher, build_payload
+from rns_push.dispatcher import PushDispatcher, build_payload, build_propagated_payload, build_silent_payload
 from rns_push.registry import Registration, Registry
 from tests.support import FakeAPNs, FakeClock
 
@@ -71,6 +71,56 @@ class DispatcherTests(unittest.TestCase):
         dispatcher.step()
         payload = json.loads(self.apns.sends[-1][4])
         self.assertEqual(payload["aps"]["alert"]["title"], "Neighborhood activity")
+
+    def test_link_request_goes_silent(self):
+        self.dispatcher.enqueue(DEST, b"\x01\x02\x03", silent=True)
+        self.dispatcher.step()
+        self.clock.advance(0.5)
+        self.dispatcher.step()
+        expected = build_silent_payload(["AQID"])
+        self.assertEqual(expected, b'{"aps":{"content-available":1},"rns":{"v":1,"packets":["AQID"]}}')
+        self.assertEqual(self.apns.sends, [("sandbox", TOKEN.hex(), "co.example.push", None, expected, "background", 5)])
+
+    def test_silent_and_alert_never_share_a_batch(self):
+        self.dispatcher.enqueue(DEST, b"\x01", silent=True)
+        self.dispatcher.enqueue(DEST, b"\x02")
+        self.dispatcher.step()
+        self.clock.advance(0.5)
+        self.dispatcher.step()
+        self.assertEqual(sorted(send[5] for send in self.apns.sends), ["alert", "background"])
+        self.assertTrue(all(len(packets_of(send)) == 1 for send in self.apns.sends))
+
+    def test_propagated_payload_is_exact(self):
+        self.dispatcher.enqueue_propagated(DEST)
+        self.dispatcher.step()
+        expected = (b'{"aps":{"alert":{"title":"New message"},"mutable-content":1,"content-available":1},'
+                    b'"rns":{"v":1,"kind":"propagated","packets":[]}}')
+        self.assertEqual(self.apns.sends, [("sandbox", TOKEN.hex(), "co.example.push", None, expected, "alert", 10)])
+
+    def test_propagated_title_comes_from_the_bundle(self):
+        dispatcher = PushDispatcher(self.registry, self.apns, self.unregistered.append, clock=self.clock,
+                                    sleep=lambda s: None, start_thread=False,
+                                    titles={"co.example.push": "Neighborhood activity"})
+        dispatcher.enqueue_propagated(DEST)
+        dispatcher.step()
+        self.assertEqual(self.apns.sends[0][4], build_propagated_payload("Neighborhood activity"))
+
+    def test_two_propagated_arrivals_push_twice(self):
+        self.dispatcher.enqueue_propagated(DEST)
+        self.dispatcher.enqueue_propagated(DEST)
+        self.dispatcher.step()
+        self.assertEqual(len(self.apns.sends), 2)
+
+    def test_propagated_push_is_rate_limited_like_data(self):
+        for _ in range(21):
+            self.dispatcher.enqueue_propagated(DEST)
+            self.dispatcher.step()
+        self.assertEqual(len(self.apns.sends), 20)
+
+    def test_unregistered_destination_not_pushed(self):
+        self.dispatcher.enqueue_propagated(OTHER)
+        self.dispatcher.step()
+        self.assertEqual(self.apns.sends, [])
 
     def test_unknown_bundle_keeps_new_message(self):
         self.assertEqual(json.loads(build_payload(["AA=="]))["aps"]["alert"]["title"], "New message")
