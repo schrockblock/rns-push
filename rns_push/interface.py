@@ -15,6 +15,7 @@ from .dispatcher import PushDispatcher
 from .packet import parse_header
 from .registry import DEFAULT_ASPECTS, Registry
 from .service import DEFAULT_MAX_REGISTRATIONS, RegistrationService, load_or_create_identity
+from .store_watch import MessageStoreWatcher
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
 DIRECT_LINK_CAP = 64
@@ -161,6 +162,7 @@ class PushSettings:
     max_registrations: int = DEFAULT_MAX_REGISTRATIONS
     allowed_aspects: tuple = (DEFAULT_ASPECTS,)
     alert_titles: tuple = ()
+    propagation_store: str | None = None
 
     @classmethod
     def from_config(cls, c):
@@ -206,8 +208,11 @@ class PushSettings:
                     raise ValueError(f"PushTCPServerInterface: invalid alert_titles entry {item!r}")
                 pairs.append((bundle.strip(), title.strip()))
             alert_titles = tuple(pairs)
+        propagation_store = None
+        if "propagation_store" in c and str(c["propagation_store"]).strip():
+            propagation_store = os.path.expanduser(str(c["propagation_store"]).strip())
         return cls(key_pem, key_id, team_id, _items(c["allowed_bundle_ids"]), max_registrations,
-                   allowed_aspects, alert_titles)
+                   allowed_aspects, alert_titles, propagation_store)
 
 
 def make_apns_client(key_pem, key_id, team_id):
@@ -235,6 +240,10 @@ class PushTCPServerInterface(TCPServerInterface):
         self.service = RegistrationService(self, self.registry, settings.allowed_bundle_ids,
                                            max_registrations=settings.max_registrations,
                                            allowed_aspects=settings.allowed_aspects)
+        self.store_watcher = None
+        if settings.propagation_store is not None:
+            self.store_watcher = MessageStoreWatcher(settings.propagation_store, self.registry,
+                                                     self.dispatcher.enqueue_propagated)
         if self.START_SERVICE:
             threading.Thread(target=self._start_service, daemon=True).start()
 
@@ -247,6 +256,8 @@ class PushTCPServerInterface(TCPServerInterface):
             self.service.start(load_or_create_identity(os.path.join(self.storage_dir, "identity")))
         except Exception as e:
             RNS.log(f"Could not start the push registration service: {e}", RNS.LOG_ERROR)
+        if self.store_watcher is not None:
+            self.store_watcher.start()
 
     # Copied from RNS 1.5.5 TCPServerInterface.incoming_connection, constructing
     # PushClientInterface instead of TCPClientInterface. IFAC is refused at startup,
@@ -339,6 +350,8 @@ class PushTCPServerInterface(TCPServerInterface):
 
     def detach(self):
         super().detach()
+        if self.store_watcher is not None:
+            self.store_watcher.stop()
         self.dispatcher.stop()
         self.service.stop()
         self.apns.close()

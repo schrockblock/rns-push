@@ -51,6 +51,8 @@ In the Reticulum `config`:
     push_aspects = lxmf.delivery, nbhd.sync
     # optional: per-bundle banner title, bundle=title (default "New message")
     alert_titles = co.lithobyte.Nbhd=Neighborhood activity
+    # optional: lxmd's message store; a message that lands there for a registered client is pushed
+    propagation_store = /data/lxmd/storage/lxmf/messagestore
 ```
 
 All `TCPServerInterface` options work except IFAC (`network_name`, `passphrase`, `ifac_size`),

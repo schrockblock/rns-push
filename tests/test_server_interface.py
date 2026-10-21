@@ -152,6 +152,33 @@ class ServerInterfaceTests(unittest.TestCase):
         self.assertIn(("nbhd", "sync"), server.service.allowed_aspects)
         self.assertEqual(server.dispatcher.titles, {"co.example.push": "Hi"})
 
+    def test_propagation_store_parses(self):
+        self.assertIsNone(self.settings().propagation_store)
+        settings = self.settings(propagation_store=" /data/lxmd/storage/lxmf/messagestore ")
+        self.assertEqual(settings.propagation_store, "/data/lxmd/storage/lxmf/messagestore")
+
+    def start_service(self, server):
+        with mock.patch.object(RNS.Transport, "ready", True, create=True), \
+                mock.patch.object(server.service, "start"):
+            server._start_service()
+
+    def test_watcher_wired_when_configured(self):
+        store = os.path.join(self.dir, "messagestore")
+        server = self.make_server(propagation_store=store)
+        self.assertEqual(server.store_watcher.path, store)
+        self.assertIs(server.store_watcher.registry, server.registry)
+        self.assertEqual(server.store_watcher.on_arrival, server.dispatcher.enqueue_propagated)
+        self.start_service(server)
+        thread = server.store_watcher._thread
+        self.assertTrue(thread.is_alive())
+        server.detach()
+        self.assertFalse(thread.is_alive())
+
+    def test_no_watcher_without_the_key(self):
+        server = self.make_server()
+        self.assertIsNone(server.store_watcher)
+        self.start_service(server)
+
     def test_state_lives_under_the_storage_path(self):
         server = self.make_server()
         self.assertEqual(server.registry.path, os.path.join(self.dir, "rns_push", "registrations.json"))
