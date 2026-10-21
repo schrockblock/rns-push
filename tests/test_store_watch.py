@@ -127,6 +127,32 @@ class MessageStoreWatcherTests(unittest.TestCase):
         self.assertEqual(self.watcher.poll(), 0)
         self.assertEqual(self.arrivals, [REGISTERED])
 
+    def test_permanently_short_file_stops_forcing_listings(self):
+        self.watcher.poll()
+        self.write(self.store, "cc_2", b"")
+        self.watcher.poll()
+        self.clock.advance(61.0)
+        self.watcher.poll()
+        self.bump(self.store)
+        self.watcher.poll()
+        real_scandir = os.scandir
+        with mock.patch("os.scandir", side_effect=real_scandir) as scandir:
+            self.watcher.poll()
+            self.assertEqual(scandir.call_count, 0)
+        self.assertEqual(self.arrivals, [])
+
+    def test_future_dir_mtime_is_cached(self):
+        wall = FakeClock(100.0)
+        watcher = MessageStoreWatcher(self.store, self.registry, self.arrivals.append, clock=self.clock,
+                                      wall_clock=wall)
+        stamp = 200 * 10**9
+        os.utime(self.store, ns=(stamp, stamp))
+        real_scandir = os.scandir
+        with mock.patch("os.scandir", side_effect=real_scandir) as scandir:
+            watcher.poll()
+            watcher.poll()
+            self.assertEqual(scandir.call_count, 1)
+
     def test_start_twice_runs_one_poller(self):
         with mock.patch("threading.Thread", wraps=threading.Thread) as thread:
             self.watcher.start()

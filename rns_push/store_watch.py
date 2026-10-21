@@ -5,6 +5,7 @@ import time
 import RNS
 
 HASH_LENGTH = 16
+SHORT_GRACE = 60.0
 
 
 class MessageStoreWatcher:
@@ -27,6 +28,7 @@ class MessageStoreWatcher:
         self.interval = interval
         self.seen_ttl = seen_ttl
         self._seen = {}
+        self._short = {}
         self._baselined = False
         self._dir_mtime_ns = None
         self._unavailable = False
@@ -55,6 +57,7 @@ class MessageStoreWatcher:
             self._baselined = False
             self._dir_mtime_ns = None
             self._seen.clear()
+            self._short.clear()
             return 0
         if mtime_ns == self._dir_mtime_ns:
             return 0
@@ -83,19 +86,26 @@ class MessageStoreWatcher:
                     continue
                 head = self._read_head(name)
                 if head is not None and len(head) < HASH_LENGTH:
-                    # Still being written: leave it unseen so the next listing retries it.
-                    incomplete = True
-                    continue
+                    # Still being written: leave it unseen so the next listing retries it, but
+                    # only for a while, or a truncated file would force a listing every poll.
+                    first = self._short.setdefault(transient_id, now)
+                    if now - first < SHORT_GRACE:
+                        incomplete = True
+                        continue
+                self._short.pop(transient_id, None)
                 self._seen[transient_id] = now
-                if head is not None and self.registry.get(head) is not None:
+                if head is not None and len(head) == HASH_LENGTH and self.registry.get(head) is not None:
                     self.on_arrival(head)
                     arrivals += 1
             stale = [t for t, at in self._seen.items() if t not in listed and now - at >= self.seen_ttl]
             for transient_id in stale:
                 del self._seen[transient_id]
+            for transient_id in [t for t in self._short if t not in listed]:
+                del self._short[transient_id]
         # Taken before the listing, so a file added during it is seen on the next pass. Not
         # cached while too recent: a file landing in the same mtime tick would leave it unchanged.
-        recent = self.wall_clock() - mtime_ns / 1e9 < max(2.0, self.interval)
+        age = self.wall_clock() - mtime_ns / 1e9
+        recent = 0 <= age < max(2.0, self.interval)
         self._dir_mtime_ns = None if recent or incomplete else mtime_ns
         return arrivals
 
