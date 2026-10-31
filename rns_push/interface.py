@@ -358,3 +358,10 @@ class PushTCPServerInterface(TCPServerInterface):
         self.dispatcher.stop()
         self.service.stop()
         self.apns.close()
+
+
+# RNS 1.5.5 interface discovery picks what to announce by class name (Discovery.py
+# InterfaceAnnouncer.DISCOVERABLE_INTERFACE_TYPES) and silently skips any name it doesn't
+# know, so the hub reports the stock name. Reticulum loads it through the shim's
+# interface_class, never by name, and __qualname__ keeps reprs pointing here.
+PushTCPServerInterface.__name__ = "TCPServerInterface"

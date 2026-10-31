@@ -9,7 +9,9 @@ import unittest
 from unittest import mock
 
 import RNS
+from RNS import Discovery
 from RNS.Interfaces.Interface import Interface
+from RNS.vendor import umsgpack
 from RNS.Interfaces.TCPInterface import TCPServerInterface
 
 import rns_push.interface as push_interface
@@ -310,6 +312,31 @@ class ServerInterfaceTests(unittest.TestCase):
         server.detach()
         self.assertTrue(server.dispatcher._stopped)
         self.assertTrue(self.apns.closed)
+
+    # discovery
+
+    def test_discovery_announces_the_hub_as_a_tcp_server(self):
+        server = self.make_server()
+        # What Reticulum's interface setup would set for "discoverable = yes".
+        server.reachable_on = "hub.example.net"
+        server.discovery_name = "Hub"
+        server.discovery_stamp_value = None
+        server.discovery_location = None
+        server.discovery_latitude = server.discovery_longitude = server.discovery_height = None
+        server.discovery_lxmf_address = None
+        server.discovery_publish_ifac = False
+        server.discovery_encrypt = False
+        announcer = Discovery.InterfaceAnnouncer.__new__(Discovery.InterfaceAnnouncer)
+        announcer.stamp_cache = {}
+        announcer.stamper = mock.Mock(generate_stamp=mock.Mock(return_value=(b"STAMP", 0)))
+
+        data = announcer.get_interface_announce_data(server)
+
+        self.assertIsNotNone(data)
+        info = umsgpack.unpackb(data[1:-len(b"STAMP")])
+        self.assertEqual(info[Discovery.INTERFACE_TYPE], "TCPServerInterface")
+        self.assertEqual(info[Discovery.REACHABLE_ON], "hub.example.net")
+        self.assertEqual(info[Discovery.PORT], server.bind_port)
 
     # shim
 
