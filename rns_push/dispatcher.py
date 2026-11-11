@@ -136,16 +136,18 @@ class PushDispatcher:
         registration = self._admit(destination_hash, silent)
         if registration is None:
             return
+        what = f"{len(batch.packets)} packet(s)"
         if silent:
-            self._send(registration, build_silent_payload(batch.packets), "background", 5, None)
+            self._send(registration, build_silent_payload(batch.packets), "background", 5, None, what)
         else:
             self._send(registration, build_payload(batch.packets, self._title(registration)), "alert", 10,
-                       registration.destination_hash.hex())
+                       registration.destination_hash.hex(), what)
 
     def _push_propagated(self, destination_hash):
         registration = self._admit(destination_hash, False)
         if registration is not None:
-            self._send(registration, build_propagated_payload(self._title(registration)), "alert", 10, None)
+            self._send(registration, build_propagated_payload(self._title(registration)), "alert", 10, None,
+                       "a propagated arrival")
 
     def _title(self, registration):
         return self.titles.get(registration.bundle_id, PUSH_TITLE)
@@ -167,7 +169,10 @@ class PushDispatcher:
         history.append(now)
         return registration
 
-    def _send(self, registration, payload, push_type, priority, collapse_id):
+    def _send(self, registration, payload, push_type, priority, collapse_id, what):
+        """Send one push; `what` names its content for the verbose log line APNs' acceptance earns.
+        At the hub's usual loglevel that line is the only trace a push leaves, since drops log at
+        debug and only failures log higher."""
         arguments = (registration.environment, registration.token.hex(), registration.bundle_id,
                      collapse_id, payload, push_type, priority)
         status, reason = self.apns.send(*arguments)
@@ -178,6 +183,7 @@ class PushDispatcher:
             self.apns.invalidate_token()
             status, reason = self.apns.send(*arguments)
         if status == 200:
+            RNS.log(f"Pushed {what} to {RNS.prettyhexrep(registration.destination_hash)} ({push_type})", RNS.LOG_VERBOSE)
             return
         if status == 410 or (status == 400 and reason in UNREGISTERED_REASONS):
             RNS.log(f"APNs rejected the token for {RNS.prettyhexrep(registration.destination_hash)} ({status} {reason}), unregistering", RNS.LOG_NOTICE)

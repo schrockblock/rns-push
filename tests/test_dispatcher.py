@@ -5,6 +5,9 @@ import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
+
+import RNS
 
 from rns_push.dispatcher import PushDispatcher, build_payload, build_propagated_payload, build_silent_payload
 from rns_push.registry import Registration, Registry
@@ -253,6 +256,31 @@ class DispatcherTests(unittest.TestCase):
             self.assertEqual(len(self.apns.sends), 1)
         finally:
             dispatcher.stop()
+
+    # A hub at loglevel 5 (verbose) otherwise shows nothing for a push that went out: only drops
+    # (debug) and APNs failures (error). One verbose line per accepted push lets a hub log answer
+    # "was this packet pushed at all, and when" after the fact.
+
+    def test_an_accepted_packet_push_is_logged_verbosely(self):
+        with mock.patch("rns_push.dispatcher.RNS.log") as log:
+            self.flush_one(b"\x01\x02\x03")
+        self.assertEqual(log.call_args_list,
+                         [mock.call("Pushed 1 packet(s) to <0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d> (alert)", RNS.LOG_VERBOSE)])
+
+    def test_an_accepted_propagated_push_is_logged_verbosely(self):
+        with mock.patch("rns_push.dispatcher.RNS.log") as log:
+            self.dispatcher.enqueue_propagated(DEST)
+            self.dispatcher.step()
+        self.assertEqual(log.call_args_list,
+                         [mock.call("Pushed a propagated arrival to <0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d> (alert)",
+                                    RNS.LOG_VERBOSE)])
+
+    def test_a_rejected_push_is_not_logged_as_pushed(self):
+        self.apns.responses = [(400, "BadTopic")]
+        with mock.patch("rns_push.dispatcher.RNS.log") as log:
+            self.flush_one(b"\x01\x02\x03")
+        self.assertEqual(len(self.apns.sends), 1)
+        self.assertFalse(any("Pushed" in str(call) for call in log.call_args_list))
 
 
 if __name__ == "__main__":
