@@ -2,6 +2,7 @@ import collections
 import dataclasses
 import os
 import socket
+import sys
 import threading
 import time
 
@@ -19,6 +20,35 @@ from .store_watch import MessageStoreWatcher
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
 DIRECT_LINK_CAP = 64
+
+
+def _path_used_index():
+    """Index of the "last used" field in a path table entry, or None on RNS < 1.6.0.
+    RNS.Transport is the class; the constant lives on the module behind it."""
+    return getattr(sys.modules.get("RNS.Transport"), "IDX_PT_USED", None)
+
+
+def keep_path_used(destination_hash):
+    """Mark the path to destination_hash as used, so RNS 1.6.0 does not cull it as idle.
+
+    A 1.6.0 transport node removes a path table entry that never carried traffic
+    (IDX_PT_USED == 0) 1.75 h after learning it (Transport.UNUSED_PATH_LINGER), and culls
+    never-used entries past Transport.PATH_POOL_UNUSED_TARGET. An announce alone does not
+    count as use, and a dormant client's path is exactly that: announced, then silent until
+    a sender's packet needs it. Without the entry the hub cannot forward that packet, so
+    nothing gets pushed. Only IDX_PT_USED is touched (not Transport.mark_path_responsive,
+    which also extends IDX_PT_EXPIRES): the path still expires a week after the last
+    announce. Returns True when an entry was marked; a no-op on RNS 1.5.5."""
+    index = _path_used_index()
+    if index is None:
+        return False
+    with RNS.Transport.path_table_lock:
+        entry = RNS.Transport.path_table.get(destination_hash)
+        if entry is None or len(entry) <= index:
+            return False
+        if not entry[index]:
+            entry[index] = time.time()
+        return True
 
 
 class PushClientInterface(TCPClientInterface):
@@ -329,15 +359,26 @@ class PushTCPServerInterface(TCPServerInterface):
             if not interface.IN:
                 return
             previous = self.bindings.get(destination_hash)
-            if previous is interface:
-                return
-            if previous is not None:
-                self._release(previous)
-            if interface.bound_hash is not None and interface.bound_hash != destination_hash:
-                self.bindings.pop(interface.bound_hash, None)
-            interface.bound_hash = destination_hash
-            self.bindings[destination_hash] = interface
-        RNS.log(f"Bound {RNS.prettyhexrep(destination_hash)} to {interface}", RNS.LOG_VERBOSE)
+            if previous is not interface:
+                if previous is not None:
+                    self._release(previous)
+                if interface.bound_hash is not None and interface.bound_hash != destination_hash:
+                    self.bindings.pop(interface.bound_hash, None)
+                interface.bound_hash = destination_hash
+                self.bindings[destination_hash] = interface
+                RNS.log(f"Bound {RNS.prettyhexrep(destination_hash)} to {interface}", RNS.LOG_VERBOSE)
+        # On every bind event, including a re-bind of the same connection: a fresh announce
+        # that re-creates a culled or expired path table entry starts it as never used.
+        # Outside bindings_lock, since this takes Transport.path_table_lock.
+        keep_path_used(destination_hash)
+
+    def keep_bound_paths_used(self):
+        """Periodic safety net for bind()'s keep-alive, in case a bound hash's path entry was
+        re-created without a bind event. Called from the registration service's sweep."""
+        with self.bindings_lock:
+            bound = list(self.bindings)
+        for destination_hash in bound:
+            keep_path_used(destination_hash)
 
     def retire(self, destination_hash):
         with self.bindings_lock:

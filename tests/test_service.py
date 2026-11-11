@@ -9,7 +9,7 @@ from unittest import mock
 import RNS
 
 from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash, destination_hash
-from rns_push.service import REQUEST_WINDOW, RegistrationService, load_or_create_identity, path_interface
+from rns_push.service import REQUEST_WINDOW, SWEEP_INTERVAL, RegistrationService, load_or_create_identity, path_interface
 from tests.support import FakeClock
 
 LINK_ID = b"\x77" * 16
@@ -22,6 +22,7 @@ class FakeServer:
         self.owned = set()
         self.binds = []
         self.retired = []
+        self.keep_alives = 0
 
     def owns(self, interface):
         return interface is not None and id(interface) in self.owned
@@ -31,6 +32,9 @@ class FakeServer:
 
     def retire(self, destination_hash):
         self.retired.append(destination_hash)
+
+    def keep_bound_paths_used(self):
+        self.keep_alives += 1
 
 
 class FakeLink:
@@ -290,6 +294,12 @@ class ServiceTests(unittest.TestCase):
         self.clock.advance(10)
         self.service.sweep()
         self.assertEqual(set(self.service._requests), {fresh.hash})
+
+    def test_sweep_keeps_bound_paths_used(self):
+        # Every hour; RNS 1.6.0 culls a never-used path after 1.75 h.
+        self.assertLessEqual(SWEEP_INTERVAL, 60 * 60)
+        self.service.sweep()
+        self.assertEqual(self.server.keep_alives, 1)
 
     # stop / deregistration
 

@@ -311,6 +311,108 @@ class ServerInterfaceTests(unittest.TestCase):
         self.assertFalse(interface.retired)
         self.assertIs(server.bindings[H1], interface)
 
+    # path keep-alive: RNS 1.6.0 culls a path that never carried traffic (IDX_PT_USED == 0)
+    # 1.75 h after the announce; a dormant client's path must not be that.
+
+    IDX_PT_USED = 7  # RNS 1.6.0 Transport.py
+
+    def path_table(self, index, **entries):
+        """Install a fake path table and pretend the installed RNS has (index=7) or lacks
+        (index=None) IDX_PT_USED, so both branches run on both RNS versions."""
+        table = {}
+        for name, used in entries.items():
+            destination_hash = bytes([int(name[1:])]) * 16
+            entry = [1000.0, b"\x11" * 16, 1, 2000.0, [], StubInterface(), b"\x22" * 32]
+            if used is not None:
+                entry.append(used)
+            table[destination_hash] = entry
+        for patcher in (mock.patch.object(RNS.Transport, "path_table", table),
+                        mock.patch.object(push_interface, "_path_used_index", return_value=index)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return table
+
+    def test_path_used_index_matches_the_installed_rns(self):
+        major_minor = tuple(int(part) for part in RNS.__version__.split(".")[:2])
+        self.assertEqual(push_interface._path_used_index(), self.IDX_PT_USED if major_minor >= (1, 6) else None)
+
+    def test_bind_marks_the_bound_paths_entry_used_and_leaves_others_alone(self):
+        table = self.path_table(self.IDX_PT_USED, h1=0, h2=0)
+        server = self.make_server()
+        before = time.time()
+        server.bind(H1, StubInterface())
+        self.assertGreaterEqual(table[H1][self.IDX_PT_USED], before)
+        self.assertEqual(table[H1][:self.IDX_PT_USED], [1000.0, b"\x11" * 16, 1, 2000.0, [], table[H1][5], b"\x22" * 32])
+        self.assertEqual(table[H2][self.IDX_PT_USED], 0)
+
+    def test_bind_marks_the_path_on_every_bind_event(self):
+        # A fresh announce over the same connection re-creates a culled entry as never used.
+        table = self.path_table(self.IDX_PT_USED, h1=0)
+        server = self.make_server()
+        interface = StubInterface()
+        server.bind(H1, interface)
+        table[H1][self.IDX_PT_USED] = 0
+        server.bind(H1, interface)
+        self.assertNotEqual(table[H1][self.IDX_PT_USED], 0)
+
+    def test_bind_keeps_a_genuine_last_used_time(self):
+        table = self.path_table(self.IDX_PT_USED, h1=1234.5)
+        server = self.make_server()
+        server.bind(H1, StubInterface())
+        self.assertEqual(table[H1][self.IDX_PT_USED], 1234.5)
+
+    def test_refused_bind_does_not_touch_the_path(self):
+        table = self.path_table(self.IDX_PT_USED, h1=0)
+        server = self.make_server()
+        interface = StubInterface()
+        interface.IN = False
+        server.bind(H1, interface)
+        self.assertEqual(table[H1][self.IDX_PT_USED], 0)
+
+    def test_bind_tolerates_rns_1_5_path_tables(self):
+        # No IDX_PT_USED at all (1.5.5), and 7-element entries even if the constant exists.
+        for index in (None, self.IDX_PT_USED):
+            with self.subTest(index=index):
+                table = self.path_table(index, h1=None)
+                server = self.make_server()
+                self.assertFalse(push_interface.keep_path_used(H1))
+                self.assertFalse(push_interface.keep_path_used(H2))
+                server.bind(H1, StubInterface())
+                self.assertEqual(len(table[H1]), 7)
+                self.assertEqual(server.bindings[H1].bound_hash, H1)
+
+    @unittest.skipIf(push_interface._path_used_index() is None, "RNS < 1.6.0 does not cull never-used paths")
+    def test_rns_culls_a_never_used_path_but_keeps_a_bound_one(self):
+        # Pins the 1.6.0 rule the keep-alive exists for against the real Transport.jobs():
+        # two identical stale-but-unexpired entries, one bound, and only the other goes.
+        interface = StubInterface()
+        RNS.Transport.interfaces.append(interface)
+        self.addCleanup(RNS.Transport.interfaces.remove, interface)
+        now = time.time()
+        learned = now - RNS.Transport.unused_path_linger - 60
+        with RNS.Transport.path_table_lock:
+            for destination_hash in (H1, H2):
+                RNS.Transport.path_table[destination_hash] = [learned, b"\x11" * 16, 1, now + 3600, [], interface, b"\x22" * 32, 0]
+                self.addCleanup(RNS.Transport.path_table.pop, destination_hash, None)
+        server = self.make_server()
+        server.bind(H1, StubInterface())
+        RNS.Transport.tables_last_culled = 0
+        RNS.Transport.jobs()
+        self.assertIn(H1, RNS.Transport.path_table)
+        self.assertNotIn(H2, RNS.Transport.path_table)
+
+    def test_keep_bound_paths_used_touches_every_binding(self):
+        table = self.path_table(self.IDX_PT_USED, h1=0, h2=0, h3=0)
+        server = self.make_server()
+        server.bind(H1, StubInterface())
+        server.bind(H2, StubInterface())
+        for destination_hash in (H1, H2):
+            table[destination_hash][self.IDX_PT_USED] = 0
+        server.keep_bound_paths_used()
+        self.assertNotEqual(table[H1][self.IDX_PT_USED], 0)
+        self.assertNotEqual(table[H2][self.IDX_PT_USED], 0)
+        self.assertEqual(table[b"\x03" * 16][self.IDX_PT_USED], 0)
+
     def test_owns_only_its_own_push_clients(self):
         server = self.make_server()
         other = self.make_server()
