@@ -69,7 +69,10 @@ enter that hash as their push hub destination. State lives in `<config>/storage/
   client connects and announces.
 - The hub forgets a client's path after a week without a fresh announce (Reticulum's
   destination timeout in the default full interface mode; shorter in access-point or roaming
-  mode), with the same recovery.
+  mode), with the same recovery. Reticulum 1.6.0 would also drop a path that never carried
+  traffic 1.75 hours after learning it, which a dormant client's path is; the hub marks the
+  path of every bound client as used, on each bind and hourly, so only the weekly expiry
+  applies.
 - Notifications always read "New message". The hub never sees message content.
 - Link requests are pushed, but they only wake the app: the link handshake cannot complete
   while the app is asleep. Once the woken app reconnects to the hub, the sender's retry of the

@@ -125,6 +125,11 @@ The hub runs a Reticulum transport node. Its TCP server interface is the hub the
   limits: dormancy does not survive a hub restart, and the client's path expires at the hub
   after a week without a fresh announce. In both cases pushing resumes the next time the app
   connects and announces.
+- **Path keep-alive.** A Reticulum 1.6.0 transport node also removes a path that has never
+  carried traffic 1.75 hours after learning it, and an announce alone does not count as
+  traffic. A dormant client's path is exactly that until a sender's packet needs it, so the
+  hub must mark the path of every bound registration as used, on each bind event and
+  periodically while bound, without extending its expiry. The weekly limit above still applies.
 
 ## 3. Push shape
 
