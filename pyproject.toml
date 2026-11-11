@@ -9,7 +9,7 @@ description = "A push-capable Reticulum hub interface: wakes sleeping iOS client
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
-dependencies = ["rns>=1.5.5,<1.6", "h2>=4.1,<5"]
+dependencies = ["rns>=1.5.5,<1.7", "h2>=4.1,<5"]
 
 [project.scripts]
 rns-push = "rns_push.cli:main"
