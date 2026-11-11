@@ -265,7 +265,8 @@ class PushTCPServerInterface(TCPServerInterface):
     # Copied from RNS 1.5.5 TCPServerInterface.incoming_connection, constructing
     # PushClientInterface instead of TCPClientInterface. IFAC is refused at startup,
     # so the IFAC key derivation is omitted. tests/test_server_interface.py checks
-    # that every attribute the stock method copies is still copied here.
+    # that every attribute the stock method copies is still copied here, on every
+    # RNS version the package supports.
     def incoming_connection(self, handler):
         RNS.log("Accepting incoming TCP connection", RNS.LOG_VERBOSE)
         spawned_configuration = {"name": "Client on "+self.name, "target_host": None, "target_port": None, "i2p_tunneled": self.i2p_tunneled}
@@ -286,6 +287,11 @@ class PushTCPServerInterface(TCPServerInterface):
         spawned_interface.ec_pr_freq = self.ec_pr_freq
         spawned_interface.ic_pr_burst_freq_new = self.ic_pr_burst_freq_new
         spawned_interface.ic_pr_burst_freq = self.ic_pr_burst_freq
+
+        # RNS 1.6.0 added per-interface cost overrides and copies them to spawned
+        # interfaces; 1.5.5 has neither attribute, hence getattr.
+        spawned_interface._destination_cost = getattr(self, "_destination_cost", None)
+        spawned_interface._pr_cost = getattr(self, "_pr_cost", None)
 
         spawned_interface.target_ip = handler.client_address[0]
         spawned_interface.target_port = str(handler.client_address[1])

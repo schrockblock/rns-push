@@ -213,6 +213,23 @@ class ServerInterfaceTests(unittest.TestCase):
                 client.close()
             self.assertTrue(wait_for(lambda: len(server.spawned_interfaces) == 0))
 
+    def test_incoming_connection_copies_cost_overrides(self):
+        # RNS 1.6.0 reads these from the spawned interface; on 1.5.5 they are inert extras.
+        server = self.make_server()
+        server._destination_cost = 3
+        server._pr_cost = 5
+        with mock.patch.object(RNS.Transport, "add_interface"), \
+                mock.patch.object(RNS.Transport, "remove_interface"):
+            client = socket.create_connection(("127.0.0.1", server.server.server_address[1]))
+            try:
+                self.assertTrue(wait_for(lambda: len(server.spawned_interfaces) == 1))
+                spawned = server.spawned_interfaces[0]
+                self.assertEqual(spawned._destination_cost, 3)
+                self.assertEqual(spawned._pr_cost, 5)
+            finally:
+                client.close()
+            self.assertTrue(wait_for(lambda: len(server.spawned_interfaces) == 0))
+
     def test_incoming_connection_copies_every_attribute_stock_copies(self):
         def assigned(function):
             return set(re.findall(r"spawned_interface\.(\w+)\s*=(?!=)", inspect.getsource(function)))
