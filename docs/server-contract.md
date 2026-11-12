@@ -139,6 +139,11 @@ The hub runs a Reticulum transport node. Its TCP server interface is the hub the
   moment a real connection binds. So a hub restart, a lost reconnect announce or a week of
   silence no longer interrupts pushing; the app need not reconnect and announce to be
   reachable again.
+- **Startup.** `rnsd` accepts TCP clients before its transport has loaded its identity and
+  tables, and the transport drops every packet until then. The hub holds a new connection's
+  reader until the transport is ready (at most two minutes), so a client that reconnects and
+  announces during startup is bound once the announce is read, instead of staying unbound
+  until its next launch.
 - **Lifetime.** A registration stays pushable until it is unregistered, rejected by APNs, or
   expires 30 days after the last `/register`.
 

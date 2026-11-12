@@ -68,10 +68,13 @@ enter that hash as their push hub destination. State lives in `<config>/storage/
 ## Known limits
 
 - After an `rnsd` restart every registration is pushed through a standby interface until its
-  client next connects and announces, even one whose client is connected: a client that
-  reconnected during startup, before Reticulum's transport was up, had its announce dropped,
-  and gets its messages by push over the air rather than over its socket until it announces
-  again. Each such push counts against the per-client rate limit of 20 per minute.
+  client next connects and announces. `rnsd` accepts TCP clients before Reticulum's transport
+  can process packets (up to a minute on a slow hub), and stock interfaces read such a
+  client's announce straight into a transport that drops it; this hub holds each new
+  connection's reader until the transport is ready, so an announce sent during startup waits
+  in the socket and binds the connection. A client that still ends up connected but unbound
+  gets its messages by push over the air rather than over its socket until it announces
+  again, each push counting against the per-client rate limit of 20 per minute.
 - A registration's path belongs to the hub while it is bound. An announce for the client that
   arrives from further away can still move the path there for up to an hour (Reticulum takes
   a later-emitted announce over a longer route), after which the hourly check points it back

@@ -22,6 +22,8 @@ from .store_watch import MessageStoreWatcher
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
 DIRECT_LINK_CAP = 64
 STANDBY_PORT = "push"
+TRANSPORT_WAIT = 120.0
+TRANSPORT_POLL = 0.1
 RANDOM_BLOB_LENGTH = 10
 PATH_TIMEOUT_FALLBACK = 60 * 60 * 24 * 7
 
@@ -359,6 +361,7 @@ class PushTCPServerInterface(TCPServerInterface):
     # RNS version the package supports.
     def incoming_connection(self, handler):
         RNS.log("Accepting incoming TCP connection", RNS.LOG_VERBOSE)
+        self._wait_for_transport()
         spawned_configuration = {"name": "Client on "+self.name, "target_host": None, "target_port": None, "i2p_tunneled": self.i2p_tunneled}
         spawned_interface = PushClientInterface(self.owner, spawned_configuration, connected_socket=handler.request, push_server=self)
         self._adopt(spawned_interface, handler.client_address[0], str(handler.client_address[1]))
@@ -369,6 +372,19 @@ class PushTCPServerInterface(TCPServerInterface):
             self.spawned_interfaces.remove(spawned_interface)
         self.spawned_interfaces.append(spawned_interface)
         spawned_interface.read_loop()
+
+    def _wait_for_transport(self):
+        """rnsd accepts TCP clients as soon as its config is read, but Transport drops every packet
+        until its identity and tables have loaded, up to a minute later on a slow hub, so a client
+        that reconnects during startup announces into the void and stays unbound until its next
+        launch. Hold the connection's reader until Transport is ready: the client's announce waits
+        in the socket buffer and is read, and binds, the moment Transport can take it."""
+        waited = 0.0
+        while not getattr(RNS.Transport, "ready", True) and not self.detached and waited < TRANSPORT_WAIT:
+            time.sleep(TRANSPORT_POLL)
+            waited += TRANSPORT_POLL
+        if waited:
+            RNS.log(f"Held an incoming connection {waited:.1f}s for transport startup", RNS.LOG_VERBOSE)
 
     def _adopt(self, spawned_interface, target_ip, target_port):
         """Give a client interface the settings stock TCPServerInterface gives its spawned ones."""

@@ -12,7 +12,7 @@ import RNS
 from RNS import Discovery
 from RNS.Interfaces.Interface import Interface
 from RNS.vendor import umsgpack
-from RNS.Interfaces.TCPInterface import TCPServerInterface
+from RNS.Interfaces.TCPInterface import HDLC, TCPServerInterface
 
 import rns_push.interface as push_interface
 from rns_push.interface import PushClientInterface, PushSettings, PushTCPServerInterface
@@ -214,6 +214,26 @@ class ServerInterfaceTests(unittest.TestCase):
                 self.assertIs(spawned.parent_interface, server)
                 self.assertTrue(spawned.online)
                 add_interface.assert_called_once_with(spawned)
+            finally:
+                client.close()
+            self.assertTrue(wait_for(lambda: len(server.spawned_interfaces) == 0))
+
+    def test_incoming_connection_waits_for_transport_to_be_ready(self):
+        # rnsd accepts clients before Transport can process packets; a client's announce sent
+        # then must wait in the socket buffer, not be read into a Transport that drops it.
+        server = self.make_server()
+        with mock.patch.object(RNS.Transport, "ready", False, create=True), \
+                mock.patch.object(RNS.Transport, "add_interface"), \
+                mock.patch.object(RNS.Transport, "remove_interface"):
+            client = socket.create_connection(("127.0.0.1", server.server.server_address[1]))
+            try:
+                client.sendall(bytes([HDLC.FLAG]) + b"\x00\x00" + b"\x09" * 16 + b"\x00early" + bytes([HDLC.FLAG]))
+                time.sleep(0.5)
+                self.assertEqual(server.spawned_interfaces, [])
+                RNS.Transport.ready = True
+                self.assertTrue(wait_for(lambda: len(server.spawned_interfaces) == 1))
+                spawned = server.spawned_interfaces[0]
+                self.assertTrue(wait_for(lambda: spawned.rxb > 0), "the bytes sent before readiness were not read")
             finally:
                 client.close()
             self.assertTrue(wait_for(lambda: len(server.spawned_interfaces) == 0))
