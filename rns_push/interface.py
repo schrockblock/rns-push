@@ -1,4 +1,5 @@
 import collections
+import contextlib
 import dataclasses
 import os
 import socket
@@ -20,34 +21,87 @@ from .store_watch import MessageStoreWatcher
 
 PUSHABLE_TYPES = (RNS.Packet.DATA, RNS.Packet.LINKREQUEST)
 DIRECT_LINK_CAP = 64
+STANDBY_PORT = "push"
+RANDOM_BLOB_LENGTH = 10
+PATH_TIMEOUT_FALLBACK = 60 * 60 * 24 * 7
 
 
-def _path_used_index():
-    """Index of the "last used" field in a path table entry, or None on RNS < 1.6.0.
-    RNS.Transport is the class; the constant lives on the module behind it."""
-    return getattr(sys.modules.get("RNS.Transport"), "IDX_PT_USED", None)
+def _path_table_indexes():
+    """{name: index} of the IDX_PT_* path table field constants of the installed RNS.
+    RNS.Transport is the class; the constants live on the module behind it."""
+    module = sys.modules.get("RNS.Transport")
+    return {name: getattr(module, name) for name in dir(module) if name.startswith("IDX_PT_")}
 
 
-def keep_path_used(destination_hash):
-    """Mark the path to destination_hash as used, so RNS 1.6.0 does not cull it as idle.
+def _path_table_lock():
+    # RNS 1.5.5 has no path_table_lock.
+    return getattr(RNS.Transport, "path_table_lock", None) or contextlib.nullcontext()
 
-    A 1.6.0 transport node removes a path table entry that never carried traffic
-    (IDX_PT_USED == 0) 1.75 h after learning it (Transport.UNUSED_PATH_LINGER), and culls
-    never-used entries past Transport.PATH_POOL_UNUSED_TARGET. An announce alone does not
-    count as use, and a dormant client's path is exactly that: announced, then silent until
-    a sender's packet needs it. Without the entry the hub cannot forward that packet, so
-    nothing gets pushed. Only IDX_PT_USED is touched (not Transport.mark_path_responsive,
-    which also extends IDX_PT_EXPIRES): the path still expires a week after the last
-    announce. Returns True when an entry was marked; a no-op on RNS 1.5.5."""
-    index = _path_used_index()
-    if index is None:
-        return False
-    with RNS.Transport.path_table_lock:
-        entry = RNS.Transport.path_table.get(destination_hash)
-        if entry is None or len(entry) <= index:
+
+def _path_timeout(interface):
+    if hasattr(RNS.Transport, "path_timeout_from_interface"):
+        return RNS.Transport.path_timeout_from_interface(interface)
+    return getattr(RNS.Transport, "PATHFINDER_E", PATH_TIMEOUT_FALLBACK)
+
+
+def standing_random_blob(now):
+    """A path table random blob whose emission time is `now`: an announce for the destination
+    replaces the entry only if it was emitted later, which a reconnecting client's is, and a
+    stale copy replayed from another node's cache is not."""
+    return os.urandom(RANDOM_BLOB_LENGTH - 5) + int(now).to_bytes(5, "big")
+
+
+def last_announce_hash(destination_hash):
+    """The packet hash of the last announce RNS remembered for destination_hash, so a standing
+    path still answers path requests from the announce cache; all zeros when none is known."""
+    known = getattr(RNS.Identity, "known_destinations", None)
+    lock = getattr(RNS.Identity, "known_destinations_lock", None) or contextlib.nullcontext()
+    with lock:
+        entry = known.get(destination_hash) if isinstance(known, dict) else None
+    width = RNS.Identity.HASHLENGTH // 8
+    if entry is not None and len(entry) > 1 and isinstance(entry[1], (bytes, bytearray)) and len(entry[1]) == width:
+        return bytes(entry[1])
+    return bytes(width)
+
+
+def ensure_push_path(destination_hash, interface, now=None):
+    """Make the hub's path to destination_hash the one-hop path through interface, which is what
+    a bound push client's path always is, and keep that path from expiring.
+
+    Transport only hands a packet to an interface it has a path table entry for, and the push
+    machinery hangs off that: no entry, no push, the packet is dropped as "no known path". A
+    bound client's entry goes missing after an rnsd restart (dormant interfaces do not survive
+    one, so the saved entry is discarded), when the client's reconnect announce was lost (rnsd
+    drops every packet until its transport identity has loaded, well after it accepts TCP
+    clients), after a week without an announce, or when a stale announce for the client relayed
+    from the wider network has pointed the path elsewhere. This creates the entry when there is
+    none, redirects one that points at another interface, and only refreshes one that already
+    points here (the expiry, and RNS 1.6.0's "last used" field, which that version culls on
+    1.75 h after learning a path no packet ever used). Returns True when the entry was created
+    or redirected."""
+    now = time.time() if now is None else now
+    idx = _path_table_indexes()
+    expires = now + _path_timeout(interface)
+    with _path_table_lock():
+        table = RNS.Transport.path_table
+        entry = table.get(destination_hash)
+        if entry is not None and entry[idx["IDX_PT_RVCD_IF"]] is interface:
+            if entry[idx["IDX_PT_EXPIRES"]] < expires:
+                entry[idx["IDX_PT_EXPIRES"]] = expires
+            used = idx.get("IDX_PT_USED")
+            if used is not None and len(entry) > used and not entry[used]:
+                entry[used] = now
             return False
-        if not entry[index]:
-            entry[index] = time.time()
+        fields = {idx["IDX_PT_TIMESTAMP"]: now,
+                  idx["IDX_PT_NEXT_HOP"]: destination_hash,
+                  idx["IDX_PT_HOPS"]: 1,
+                  idx["IDX_PT_EXPIRES"]: expires,
+                  idx["IDX_PT_RANDBLOBS"]: [standing_random_blob(now)],
+                  idx["IDX_PT_RVCD_IF"]: interface,
+                  idx["IDX_PT_PACKET"]: last_announce_hash(destination_hash)}
+        if "IDX_PT_USED" in idx:
+            fields[idx["IDX_PT_USED"]] = now
+        table[destination_hash] = [fields.get(i) for i in range(max(idx.values()) + 1)]
         return True
 
 
@@ -282,6 +336,12 @@ class PushTCPServerInterface(TCPServerInterface):
             time.sleep(0.5)
         if self.detached:
             return
+        # Before the service: a registered client's packets must have somewhere to go from the
+        # moment Transport is up, whether or not the client ever reconnects and announces.
+        try:
+            self.ensure_standbys()
+        except Exception as e:
+            RNS.log(f"Could not stand in for the registered push clients: {e}", RNS.LOG_ERROR)
         try:
             self.service.start(load_or_create_identity(os.path.join(self.storage_dir, "identity")))
         except Exception as e:
@@ -301,6 +361,17 @@ class PushTCPServerInterface(TCPServerInterface):
         RNS.log("Accepting incoming TCP connection", RNS.LOG_VERBOSE)
         spawned_configuration = {"name": "Client on "+self.name, "target_host": None, "target_port": None, "i2p_tunneled": self.i2p_tunneled}
         spawned_interface = PushClientInterface(self.owner, spawned_configuration, connected_socket=handler.request, push_server=self)
+        self._adopt(spawned_interface, handler.client_address[0], str(handler.client_address[1]))
+        spawned_interface.online = True
+        RNS.log("Spawned new push client interface: "+str(spawned_interface), RNS.LOG_VERBOSE)
+        RNS.Transport.add_interface(spawned_interface)
+        while spawned_interface in self.spawned_interfaces:
+            self.spawned_interfaces.remove(spawned_interface)
+        self.spawned_interfaces.append(spawned_interface)
+        spawned_interface.read_loop()
+
+    def _adopt(self, spawned_interface, target_ip, target_port):
+        """Give a client interface the settings stock TCPServerInterface gives its spawned ones."""
         spawned_interface.OUT = self.OUT
         spawned_interface.IN  = self.IN
 
@@ -323,8 +394,8 @@ class PushTCPServerInterface(TCPServerInterface):
         spawned_interface._destination_cost = getattr(self, "_destination_cost", None)
         spawned_interface._pr_cost = getattr(self, "_pr_cost", None)
 
-        spawned_interface.target_ip = handler.client_address[0]
-        spawned_interface.target_port = str(handler.client_address[1])
+        spawned_interface.target_ip = target_ip
+        spawned_interface.target_port = target_port
         spawned_interface.parent_interface = self
         spawned_interface.bitrate = self.bitrate
         spawned_interface.optimise_mtu()
@@ -343,42 +414,68 @@ class PushTCPServerInterface(TCPServerInterface):
         spawned_interface.announces_to_internal = self.announces_to_internal
         spawned_interface.announce_cap = self.announce_cap
         spawned_interface.HW_MTU = self.HW_MTU
-        spawned_interface.online = True
-        RNS.log("Spawned new push client interface: "+str(spawned_interface), RNS.LOG_VERBOSE)
-        RNS.Transport.add_interface(spawned_interface)
-        while spawned_interface in self.spawned_interfaces:
-            self.spawned_interfaces.remove(spawned_interface)
-        self.spawned_interfaces.append(spawned_interface)
-        spawned_interface.read_loop()
 
     def owns(self, interface):
         return isinstance(interface, PushClientInterface) and interface.push_server is self
 
+    def standby(self, destination_hash):
+        """Bind destination_hash to a push client that never had a socket, so Transport has an
+        interface to hand its packets to, and pushes them, while no connection of the client's
+        is bound: after an rnsd restart (bindings live in memory), or when the client's
+        reconnect announce never reached Transport. It is a dormant interface in every way
+        that matters and is retired like one when a real connection binds. Returns the new
+        interface, or None when the destination is already bound."""
+        with self.bindings_lock:
+            if destination_hash in self.bindings:
+                return None
+            configuration = {"name": "Standby on "+self.name, "target_host": None, "target_port": None,
+                             "i2p_tunneled": self.i2p_tunneled}
+            interface = PushClientInterface(self.owner, configuration, push_server=self)
+            self._adopt(interface, RNS.hexrep(destination_hash, delimit=False), STANDBY_PORT)
+            interface.dormant = True
+            interface.online = True
+            RNS.Transport.add_interface(interface)
+            self.spawned_interfaces.append(interface)
+            self._bind(destination_hash, interface)
+        RNS.log(f"{interface} stands in for {RNS.prettyhexrep(destination_hash)} until it connects", RNS.LOG_INFO)
+        ensure_push_path(destination_hash, interface)
+        return interface
+
+    def ensure_standbys(self):
+        """A standby for every registration nothing is bound to."""
+        for registration in self.registry.all():
+            self.standby(registration.destination_hash)
+
     def bind(self, destination_hash, interface):
         with self.bindings_lock:
-            if not interface.IN:
+            if not self._bind(destination_hash, interface):
                 return
-            previous = self.bindings.get(destination_hash)
-            if previous is not interface:
-                if previous is not None:
-                    self._release(previous)
-                if interface.bound_hash is not None and interface.bound_hash != destination_hash:
-                    self.bindings.pop(interface.bound_hash, None)
-                interface.bound_hash = destination_hash
-                self.bindings[destination_hash] = interface
-                RNS.log(f"Bound {RNS.prettyhexrep(destination_hash)} to {interface}", RNS.LOG_VERBOSE)
-        # On every bind event, including a re-bind of the same connection: a fresh announce
-        # that re-creates a culled or expired path table entry starts it as never used.
-        # Outside bindings_lock, since this takes Transport.path_table_lock.
-        keep_path_used(destination_hash)
+        # Outside bindings_lock, since this takes Transport.path_table_lock, which Transport may
+        # hold while calling into code that takes bindings_lock.
+        ensure_push_path(destination_hash, interface)
 
-    def keep_bound_paths_used(self):
-        """Periodic safety net for bind()'s keep-alive, in case a bound hash's path entry was
-        re-created without a bind event. Called from the registration service's sweep."""
+    def _bind(self, destination_hash, interface):
+        if not interface.IN:
+            return False
+        previous = self.bindings.get(destination_hash)
+        if previous is not interface:
+            if previous is not None:
+                self._release(previous)
+            if interface.bound_hash is not None and interface.bound_hash != destination_hash:
+                self.bindings.pop(interface.bound_hash, None)
+            interface.bound_hash = destination_hash
+            self.bindings[destination_hash] = interface
+            RNS.log(f"Bound {RNS.prettyhexrep(destination_hash)} to {interface}", RNS.LOG_VERBOSE)
+        return True
+
+    def maintain_paths(self):
+        """Hourly from the registration service's sweep: every registration is bound to
+        something, with a standby if need be, and keeps its one-hop path through it."""
+        self.ensure_standbys()
         with self.bindings_lock:
-            bound = list(self.bindings)
-        for destination_hash in bound:
-            keep_path_used(destination_hash)
+            bound = list(self.bindings.items())
+        for destination_hash, interface in bound:
+            ensure_push_path(destination_hash, interface)
 
     def retire(self, destination_hash):
         with self.bindings_lock:

@@ -33,7 +33,7 @@ class FakeServer:
     def retire(self, destination_hash):
         self.retired.append(destination_hash)
 
-    def keep_bound_paths_used(self):
+    def maintain_paths(self):
         self.keep_alives += 1
 
 
@@ -295,7 +295,7 @@ class ServiceTests(unittest.TestCase):
         self.service.sweep()
         self.assertEqual(set(self.service._requests), {fresh.hash})
 
-    def test_sweep_keeps_bound_paths_used(self):
+    def test_sweep_maintains_the_push_paths(self):
         # Every hour; RNS 1.6.0 culls a never-used path after 1.75 h.
         self.assertLessEqual(SWEEP_INTERVAL, 60 * 60)
         self.service.sweep()

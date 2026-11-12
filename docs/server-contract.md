@@ -121,15 +121,26 @@ The hub runs a Reticulum transport node. Its TCP server interface is the hub the
   distinct packet hash, and its receipt for each attempt lives only 6 s plus 6 s per hop. Push
   every attempt. Use `apns-collapse-id` (§3) so the user sees one banner. A per-destination rate
   limit (suggested: 20 pushes per minute) protects the APNs quota.
-- **Lifetime.** A dormant interface lives as long as its registration, subject to these known
-  limits: dormancy does not survive a hub restart, and the client's path expires at the hub
-  after a week without a fresh announce. In both cases pushing resumes the next time the app
-  connects and announces.
-- **Path keep-alive.** A Reticulum 1.6.0 transport node also removes a path that has never
-  carried traffic 1.75 hours after learning it, and an announce alone does not count as
-  traffic. A dormant client's path is exactly that until a sender's packet needs it, so the
-  hub must mark the path of every bound registration as used, on each bind event and
-  periodically while bound, without extending its expiry. The weekly limit above still applies.
+- **Standing paths.** The transport only hands a packet to an interface it holds a path table
+  entry for, so a registration is only pushable while the hub's path to its `destination_hash`
+  runs through the interface the registration is bound to. The hub keeps that invariant
+  itself rather than relying on the client's announces: on every bind event, and periodically
+  while bound, it makes sure the path to the bound hash is a one-hop path through the bound
+  interface, creating the entry when there is none, redirecting one that points elsewhere (a
+  stale announce for the client relayed from the wider network), and refreshing the expiry
+  and, on Reticulum 1.6.0, the never-used marker of one that already does. The entry carries
+  an emission time of the moment it was installed, so only an announce emitted after that
+  replaces it, which a reconnecting client's does and a replayed old announce does not.
+- **Standbys.** A registration no connection is bound to, which is every registration right
+  after a hub restart (bindings and dormant interfaces live in memory), is bound to a
+  *standby*: a dormant interface that never had a socket, created when the hub starts and
+  whenever the periodic check finds an unbound registration. It behaves as any dormant
+  interface (packets it is handed are pushed, proofs are attributed to it) and is retired the
+  moment a real connection binds. So a hub restart, a lost reconnect announce or a week of
+  silence no longer interrupts pushing; the app need not reconnect and announce to be
+  reachable again.
+- **Lifetime.** A registration stays pushable until it is unregistered, rejected by APNs, or
+  expires 30 days after the last `/register`.
 
 ## 3. Push shape
 

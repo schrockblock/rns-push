@@ -157,6 +157,45 @@ class EndToEndTest(unittest.TestCase):
         receipt = json.loads(wait_for_file(self.path("receipt.json"), 30))
         self.assertEqual(receipt["status"], RNS.PacketReceipt.DELIVERED, "see hub.log and sender.log")
 
+    def test_after_a_hub_restart_a_registered_client_is_pushed_without_reconnecting(self):
+        # Bindings and dormant interfaces live in memory, so a restarted hub starts with no
+        # path to the client. Its registration survives, and that alone must be enough to push.
+        first = self.spawn("hub", self.hub_dir, self.path("pushes-1.jsonl"), self.path("ready-1.json"), self.path("dormant-1.json"))
+        registration_hex = json.loads(wait_for_file(self.path("ready-1.json"), 30))["registration_hash"]
+        client = self.spawn("client", self.client_dir, self.identity_path, registration_hex, self.path("registered.json"))
+        self.assertEqual(client.wait(timeout=60), 0, "client failed, see client.log")
+        client_hex = delivery_hash(self.identity).hex()
+        wait_for_file(self.path("dormant-1.json"), 15)
+
+        # The sender learns its path while the first hub is up, then holds its packet.
+        self.spawn("sender", self.sender_dir, client_hex, self.path("sent.json"), self.path("receipt.json"),
+                   "--pathed", self.path("pathed.json"), "--go", self.path("go"))
+        wait_for_file(self.path("pathed.json"), 40)
+
+        first.terminate()
+        first.wait(timeout=30)
+        second = self.spawn("hub", self.hub_dir, self.path("pushes-2.jsonl"), self.path("ready-2.json"), self.path("dormant-2.json"))
+        wait_for_file(self.path("ready-2.json"), 30)
+        standby = json.loads(wait_for_file(self.path("dormant-2.json"), 15))
+        self.assertEqual(standby, {"bound_hash": client_hex}, "the restarted hub has no standby, see hub.log")
+
+        with open(self.path("go"), "w") as f:
+            f.write("go")
+        wait_for_file(self.path("sent.json"), 60)
+        push = json.loads(wait_for_file(self.path("pushes-2.jsonl"), 20).splitlines()[0])
+        self.assertEqual(push["collapse_id"], client_hex)
+        raw = base64.b64decode(json.loads(push["payload"])["rns"]["packets"][0])
+        self.assertEqual(raw[0] >> 6, RNS.Packet.HEADER_1)
+        self.assertFalse(os.path.exists(self.path("pushes-1.jsonl")), "the first hub pushed; the sender did not hold")
+
+        frame = bytes([HDLC.FLAG]) + HDLC.escape(implicit_proof(raw, self.identity)) + bytes([HDLC.FLAG])
+        with socket.create_connection(("127.0.0.1", self.port)) as extension:
+            extension.sendall(frame)
+            time.sleep(1.0)
+        receipt = json.loads(wait_for_file(self.path("receipt.json"), 30))
+        self.assertEqual(receipt["status"], RNS.PacketReceipt.DELIVERED, "see hub.log and sender.log")
+        self.assertEqual(second.poll(), None)
+
     def test_nbhd_sync_packet_is_pushed(self):
         self.spawn("hub", self.hub_dir, self.path("pushes.jsonl"), self.path("ready.json"), self.path("dormant.json"))
         registration_hex = json.loads(wait_for_file(self.path("ready.json"), 30))["registration_hash"]

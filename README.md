@@ -4,8 +4,10 @@ A push-capable hub for [Reticulum](https://reticulum.network). It runs inside st
 external interface plugin. When a registered iOS client's TCP connection drops, the hub keeps
 the client's interface attached, pushes the packets it would have written to the socket through
 Apple Push Notification service, and routes the proofs the client sends back to the original
-sender. Senders need nothing and never know push was involved. The wire contract for clients is
-in [docs/server-contract.md](docs/server-contract.md).
+sender. A registered client stays reachable this way across hub restarts and lost announces:
+the hub keeps its own one-hop path to every registration, standing in with a socketless
+interface when no connection is bound. Senders need nothing and never know push was involved.
+The wire contract for clients is in [docs/server-contract.md](docs/server-contract.md).
 
 ## Install
 
@@ -65,14 +67,15 @@ enter that hash as their push hub destination. State lives in `<config>/storage/
 
 ## Known limits
 
-- Dormant interfaces do not survive an `rnsd` restart. Pushing resumes the next time each
-  client connects and announces.
-- The hub forgets a client's path after a week without a fresh announce (Reticulum's
-  destination timeout in the default full interface mode; shorter in access-point or roaming
-  mode), with the same recovery. Reticulum 1.6.0 would also drop a path that never carried
-  traffic 1.75 hours after learning it, which a dormant client's path is; the hub marks the
-  path of every bound client as used, on each bind and hourly, so only the weekly expiry
-  applies.
+- After an `rnsd` restart every registration is pushed through a standby interface until its
+  client next connects and announces, even one whose client is connected: a client that
+  reconnected during startup, before Reticulum's transport was up, had its announce dropped,
+  and gets its messages by push over the air rather than over its socket until it announces
+  again. Each such push counts against the per-client rate limit of 20 per minute.
+- A registration's path belongs to the hub while it is bound. An announce for the client that
+  arrives from further away can still move the path there for up to an hour (Reticulum takes
+  a later-emitted announce over a longer route), after which the hourly check points it back
+  at the bound interface. A client that has moved to another hub should unregister here.
 - Notifications always read "New message". The hub never sees message content.
 - Link requests are pushed, but they only wake the app: the link handshake cannot complete
   while the app is asleep. Once the woken app reconnects to the hub, the sender's retry of the

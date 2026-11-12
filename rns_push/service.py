@@ -112,7 +112,7 @@ class RegistrationService:
         for destination_hash in self.registry.expire():
             self.server.retire(destination_hash)
         # Hourly, well inside RNS 1.6.0's 1.75 h never-used path linger.
-        self.server.keep_bound_paths_used()
+        self.server.maintain_paths()
         now = self.clock()
         with self._lock:
             stale = [identity_hash for identity_hash, history in self._requests.items()
