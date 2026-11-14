@@ -531,6 +531,65 @@ class ServerInterfaceTests(unittest.TestCase):
         self.remove_interface.assert_called_once_with(standby)
         self.assertIs(table[H1][5], live)
 
+    # a closing unbound connection: the path a client's announce moved onto it goes back
+
+    def unbound_client(self, server):
+        """A spawned connection nothing is bound to, as incoming_connection makes one."""
+        configuration = {"name": "Client on "+server.name, "target_host": None, "target_port": None,
+                         "i2p_tunneled": False}
+        interface = PushClientInterface(RNS.Transport, configuration, push_server=server)
+        server._adopt(interface, "192.0.2.1", 50000)
+        interface.online = True
+        server.spawned_interfaces.append(interface)
+        return interface
+
+    def test_closing_an_unbound_connection_points_a_moved_path_back_at_the_bound_interface(self):
+        # A push-woken client redials, announces over the new connection without binding it, and
+        # hangs up within seconds. Transport moved its path onto that connection and would cull
+        # the path along with the interface, leaving the bound dormant one unreachable.
+        self.transport_patched()
+        table = self.path_table()
+        self.forget_known_destinations()
+        server = self.make_server()
+        bound = StubInterface(dormant=True)
+        server.bind(H1, bound)
+        transient = self.unbound_client(server)
+        table[H1] = self.entry(transient, blobs=[b"\x44" * 10])
+        transient.teardown()
+        self.assertIs(table[H1][5], bound)
+        self.assertEqual(table[H1][2], 1)
+        self.assertNotIn(b"\x44" * 10, table[H1][4])
+        self.assertNotIn(transient, server.spawned_interfaces)
+        self.remove_interface.assert_called_once_with(transient)
+
+    def test_restore_paths_through_leaves_paths_of_unbound_destinations_to_transport(self):
+        self.transport_patched()
+        table = self.path_table()
+        self.forget_known_destinations()
+        server = self.make_server()
+        bound = StubInterface(dormant=True)
+        server.bind(H1, bound)
+        transient = self.unbound_client(server)
+        table[H1] = self.entry(transient)
+        table[H2] = other = self.entry(transient)
+        self.assertEqual(server.restore_paths_through(transient), [H1])
+        self.assertIs(table[H1][5], bound)
+        self.assertIs(table[H2], other)
+
+    def test_a_bound_connection_closing_goes_dormant_and_restores_nothing(self):
+        self.transport_patched()
+        self.path_table()
+        self.forget_known_destinations()
+        server = self.make_server()
+        interface = self.unbound_client(server)
+        server.bind(H1, interface)
+        with mock.patch.object(server, "restore_paths_through") as restore:
+            interface.teardown()
+        self.assertTrue(interface.dormant)
+        self.assertTrue(interface.online)
+        restore.assert_not_called()
+        self.remove_interface.assert_not_called()
+
     def test_ensure_standbys_covers_every_registration_nothing_is_bound_to(self):
         self.transport_patched()
         self.path_table()

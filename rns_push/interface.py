@@ -133,32 +133,40 @@ class PushClientInterface(TCPClientInterface):
         # while we're changing it, leaving a zombie dormant-but-unbound interface.
         with self.push_server.bindings_lock:
             if self.bound_hash is None:
-                return super().teardown()
-            # self.dormant is set first, before anything else, to close the race where a
-            # concurrent transmit sees online=False/dormant=False. self.online is explicitly
-            # (re)set True, not merely left alone: stock read_loop sets self.online = False
-            # immediately before calling teardown() -- both on a clean peer close (TCPInterface.py
-            # :416) and on a socket exception (:428) -- and RNS 1.5.5 Transport._inbound() drops
-            # every inbound packet whose receiving_interface.online is False (Transport.py:1916),
-            # which would make a dormant interface's redirected proofs get discarded before the
-            # proof branch ever runs.
-            was_dormant = self.dormant
-            self.dormant = True
-            self.online = True
-            if not was_dormant:
-                RNS.log(f"{self} is dormant for {RNS.prettyhexrep(self.bound_hash)}", RNS.LOG_INFO)
-            if self.socket is not None:
-                try:
-                    self.socket.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                try:
-                    self.socket.close()
-                except OSError:
-                    pass
-                # Dropped so a later detach() (Interface.detach checks "if self.socket != None")
-                # doesn't try to shutdown/close an already-closed socket and log EBADF noise.
-                self.socket = None
+                super().teardown()
+            else:
+                self._go_dormant()
+                return
+        # Outside bindings_lock, since this takes Transport.path_table_lock (see bind()).
+        self.push_server.restore_paths_through(self)
+
+    def _go_dormant(self):
+        """The bound branch of teardown(), under the server's bindings_lock."""
+        # self.dormant is set first, before anything else, to close the race where a
+        # concurrent transmit sees online=False/dormant=False. self.online is explicitly
+        # (re)set True, not merely left alone: stock read_loop sets self.online = False
+        # immediately before calling teardown() -- both on a clean peer close (TCPInterface.py
+        # :416) and on a socket exception (:428) -- and RNS 1.5.5 Transport._inbound() drops
+        # every inbound packet whose receiving_interface.online is False (Transport.py:1916),
+        # which would make a dormant interface's redirected proofs get discarded before the
+        # proof branch ever runs.
+        was_dormant = self.dormant
+        self.dormant = True
+        self.online = True
+        if not was_dormant:
+            RNS.log(f"{self} is dormant for {RNS.prettyhexrep(self.bound_hash)}", RNS.LOG_INFO)
+        if self.socket is not None:
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.socket.close()
+            except OSError:
+                pass
+            # Dropped so a later detach() (Interface.detach checks "if self.socket != None")
+            # doesn't try to shutdown/close an already-closed socket and log EBADF noise.
+            self.socket = None
 
     def retire(self):
         RNS.log(f"Retiring {self}", RNS.LOG_VERBOSE)
@@ -492,6 +500,34 @@ class PushTCPServerInterface(TCPServerInterface):
             bound = list(self.bindings.items())
         for destination_hash, interface in bound:
             ensure_push_path(destination_hash, interface)
+
+    def restore_paths_through(self, interface):
+        """An unbound connection is closing. A client that announces over a connection it never
+        binds (a push-woken app redials, announces, syncs and hangs up within seconds) moves the
+        hub's path to it onto that connection, and Transport's next table cull drops the path
+        along with the interface, leaving the client's still-bound dormant interface with no
+        path: every direct send to it then fails over to propagation, whose arrival push wakes
+        the app into the same redial. Points every bound destination whose path runs through the
+        closing interface back at its bound interface. Returns those destinations."""
+        received_on = _path_table_indexes()["IDX_PT_RVCD_IF"]
+        try:
+            with _path_table_lock():
+                moved = [destination_hash for destination_hash, entry in list(RNS.Transport.path_table.items())
+                         if entry[received_on] is interface]
+        except RuntimeError:
+            # RNS 1.5.5 has no path table lock and the table changed under us; the hourly check
+            # catches up.
+            return []
+        if not moved:
+            return []
+        with self.bindings_lock:
+            restored = [(destination_hash, self.bindings[destination_hash]) for destination_hash in moved
+                        if destination_hash in self.bindings and self.bindings[destination_hash] is not interface]
+        for destination_hash, bound in restored:
+            RNS.log(f"Pointing the path to {RNS.prettyhexrep(destination_hash)} back at {bound}, since {interface} closed",
+                    RNS.LOG_VERBOSE)
+            ensure_push_path(destination_hash, bound)
+        return [destination_hash for destination_hash, _ in restored]
 
     def retire(self, destination_hash):
         with self.bindings_lock:

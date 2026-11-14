@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rns-push"
-version = "0.2.1"
+version = "0.2.2"
 description = "A push-capable Reticulum hub interface: wakes sleeping iOS clients through APNs"
 readme = "README.md"
 requires-python = ">=3.8"

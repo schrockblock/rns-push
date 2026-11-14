@@ -41,6 +41,11 @@ class FakeServer:
         self.rxb = 0
         self.txb = 0
         self.bindings_lock = threading.RLock()
+        self.restored_through = []
+
+    def restore_paths_through(self, interface):
+        self.restored_through.append(interface)
+        return []
 
 
 class ClientInterfaceTests(unittest.TestCase):
@@ -97,6 +102,8 @@ class ClientInterfaceTests(unittest.TestCase):
         self.assertNotIn(interface, self.server.spawned_interfaces)
         self.assertFalse(interface.OUT)
         self.assertFalse(interface.dormant)
+        # ...plus the server gets to point any path a client's announce moved onto it elsewhere.
+        self.assertEqual(self.server.restored_through, [interface])
 
     def test_bound_teardown_goes_dormant_and_stays_attached(self):
         interface = self.dormant()
@@ -104,6 +111,7 @@ class ClientInterfaceTests(unittest.TestCase):
         self.assertTrue(interface.online)
         self.assertTrue(interface.OUT)
         self.assertIn(interface, self.server.spawned_interfaces)
+        self.assertEqual(self.server.restored_through, [])
         self.remove_interface.assert_not_called()
 
     def test_bound_teardown_closes_the_socket(self):

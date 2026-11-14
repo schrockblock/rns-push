@@ -78,7 +78,10 @@ enter that hash as their push hub destination. State lives in `<config>/storage/
 - A registration's path belongs to the hub while it is bound. An announce for the client that
   arrives from further away can still move the path there for up to an hour (Reticulum takes
   a later-emitted announce over a longer route), after which the hourly check points it back
-  at the bound interface. A client that has moved to another hub should unregister here.
+  at the bound interface. A client that has moved to another hub should unregister here. An
+  announce over one of the client's own connections that it never binds (a push-woken app's
+  short redial) moves the path too, but only until that connection closes, when the hub
+  points it back at once.
 - Notifications always read "New message". The hub never sees message content.
 - Link requests are pushed, but they only wake the app: the link handshake cannot complete
   while the app is asleep. Once the woken app reconnects to the hub, the sender's retry of the

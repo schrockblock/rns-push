@@ -131,6 +131,12 @@ The hub runs a Reticulum transport node. Its TCP server interface is the hub the
   and, on Reticulum 1.6.0, the never-used marker of one that already does. The entry carries
   an emission time of the moment it was installed, so only an announce emitted after that
   replaces it, which a reconnecting client's does and a replayed old announce does not.
+  A client may also announce over a connection it never binds (an app woken by a push
+  redials, announces, syncs and hangs up within seconds); that moves the path onto a
+  connection the transport will cull the path along with. When an unbound connection closes,
+  the hub points every bound destination whose path ran through it back at its bound
+  interface, so the client stays pushable instead of every direct send to it failing over
+  to propagation, whose arrival push would wake the app into the same redial.
 - **Standbys.** A registration no connection is bound to, which is every registration right
   after a hub restart (bindings and dormant interfaces live in memory), is bound to a
   *standby*: a dormant interface that never had a socket, created when the hub starts and
