@@ -9,7 +9,8 @@ from unittest import mock
 import RNS
 
 from rns_push.registry import REGISTRATION_LIFETIME, Registration, Registry, delivery_hash, destination_hash
-from rns_push.service import REQUEST_WINDOW, SWEEP_INTERVAL, RegistrationService, load_or_create_identity, path_interface
+from rns_push.service import (MAINTENANCE_TICK, REQUEST_WINDOW, SWEEP_INTERVAL, RegistrationService,
+                              load_or_create_identity, path_interface)
 from tests.support import FakeClock
 
 LINK_ID = b"\x77" * 16
@@ -23,6 +24,10 @@ class FakeServer:
         self.binds = []
         self.retired = []
         self.keep_alives = 0
+        self.repins = 0
+
+    def repin_paths(self):
+        self.repins += 1
 
     def owns(self, interface):
         return interface is not None and id(interface) in self.owned
@@ -300,6 +305,16 @@ class ServiceTests(unittest.TestCase):
         self.assertLessEqual(SWEEP_INTERVAL, 60 * 60)
         self.service.sweep()
         self.assertEqual(self.server.keep_alives, 1)
+
+    def test_every_maintenance_tick_repins_the_push_paths(self):
+        # Transport can move a bound client's path away at any time (a LAN multicast peer, a
+        # relayed announce); the hourly sweep is far too slow to put it back.
+        self.assertLessEqual(MAINTENANCE_TICK, 10)
+        with mock.patch.object(self.service, "announce"), \
+                mock.patch.object(self.service._stopped, "wait", side_effect=lambda t: self.service._stopped.set()):
+            self.service._maintenance_loop()
+        self.assertEqual(self.server.repins, 1)
+        self.assertEqual(self.server.keep_alives, 0)
 
     # stop / deregistration
 

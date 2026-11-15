@@ -576,6 +576,55 @@ class ServerInterfaceTests(unittest.TestCase):
         self.assertIs(table[H1][5], bound)
         self.assertIs(table[H2], other)
 
+    def removal_hook_fixture(self):
+        """Transport's real remove_interface, so the hub's hook on it runs; a bound dormant
+        client whose path Transport moved onto some other interface."""
+        patcher = mock.patch.object(RNS.Transport, "add_interface")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        table = self.path_table()
+        self.forget_known_destinations()
+        server = self.make_server()
+        bound = StubInterface(dormant=True)
+        server.bind(H1, bound)
+        peer = StubInterface()
+        table[H1] = self.entry(peer, blobs=[b"\x44" * 10])
+        return server, table, bound, peer
+
+    def test_any_interface_leaving_transport_points_moved_paths_back_at_the_bound_interface(self):
+        # Seen live: a phone on the hub's LAN announces over multicast while its app is open, the
+        # hub's AutoInterface spawns a peer interface for it and Transport moves the phone's path
+        # there; ~22 s after the app closes the peer times out and is removed, and Transport's
+        # next cull would drop the path with it, leaving the bound dormant client unreachable.
+        server, table, bound, peer = self.removal_hook_fixture()
+        table[H2] = other = self.entry(peer)
+        self.assertTrue(getattr(RNS.Transport.remove_interface, "_rns_push_restores", False))
+        RNS.Transport.remove_interface(peer)
+        self.assertIs(table[H1][5], bound)
+        self.assertEqual(table[H1][2], 1)
+        self.assertNotIn(b"\x44" * 10, table[H1][4])
+        self.assertIs(table[H2], other)
+
+    def test_a_detached_server_no_longer_restores_paths(self):
+        server, table, bound, peer = self.removal_hook_fixture()
+        server.detach()
+        RNS.Transport.remove_interface(peer)
+        self.assertIs(table[H1][5], peer)
+
+    def test_repin_paths_points_every_binding_back_and_leaves_the_rest(self):
+        self.transport_patched()
+        bound = StubInterface(dormant=True)
+        elsewhere = StubInterface()
+        table = self.path_table(h3=self.entry(elsewhere))
+        self.forget_known_destinations()
+        server = self.make_server()
+        server.bind(H1, bound)
+        table[H1] = self.entry(elsewhere)
+        server.repin_paths()
+        self.assertIs(table[H1][5], bound)
+        self.assertEqual(table[H1][2], 1)
+        self.assertIs(table[b"\x03" * 16][5], elsewhere)
+
     def test_a_bound_connection_closing_goes_dormant_and_restores_nothing(self):
         self.transport_patched()
         self.path_table()

@@ -13,6 +13,7 @@ APP_NAME = "rnspush"
 ASPECT = "registration"
 ANNOUNCE_INTERVAL = 30 * 60
 SWEEP_INTERVAL = 60 * 60
+MAINTENANCE_TICK = 10
 REQUEST_LIMIT = 10
 REQUEST_WINDOW = 60 * 60
 MAX_TOKEN_LENGTH = 100
@@ -249,4 +250,10 @@ class RegistrationService:
                 except Exception as e:
                     RNS.log(f"Push registration sweep failed: {e}", RNS.LOG_ERROR)
                 last_sweep = now
-            self._stopped.wait(10)
+            # Every tick: a bound client's path stays pinned through its bound interface however
+            # Transport moved it in between (see PushTCPServerInterface.repin_paths).
+            try:
+                self.server.repin_paths()
+            except Exception as e:
+                RNS.log(f"Could not re-pin the push paths: {e}", RNS.LOG_ERROR)
+            self._stopped.wait(MAINTENANCE_TICK)

@@ -6,6 +6,7 @@ import socket
 import sys
 import threading
 import time
+import weakref
 
 import RNS
 from RNS.Interfaces.Interface import Interface
@@ -64,6 +65,38 @@ def last_announce_hash(destination_hash):
     if entry is not None and len(entry) > 1 and isinstance(entry[1], (bytes, bytearray)) and len(entry[1]) == width:
         return bytes(entry[1])
     return bytes(width)
+
+
+_servers = weakref.WeakSet()
+
+
+def watch_interface_removals():
+    """Wrap RNS.Transport.remove_interface so that whatever interface leaves Transport, every
+    bound destination whose path ran through it is pointed back at its bound interface before
+    Transport's next table cull can drop the path along with the interface.
+
+    rns-push's own unbound connections already do this from teardown(); this catches the rest.
+    Seen live: a phone on the hub's LAN announces over multicast while its app is open, so
+    Transport moves its path onto the AutoInterfacePeer the hub spawns for it; ~22 s after the
+    app closes the peer times out, the interface is removed, and the cull removes the path.
+    The bound dormant TCP interface is still there, but with no path nothing is pushed."""
+    current = RNS.Transport.remove_interface
+    if getattr(current, "_rns_push_restores", False):
+        return
+    stock = current
+
+    def remove_interface(interface):
+        try:
+            return stock(interface)
+        finally:
+            for server in list(_servers):
+                try:
+                    server.restore_paths_through(interface)
+                except Exception as e:
+                    RNS.log(f"Could not restore push paths after {interface} was removed: {e}", RNS.LOG_ERROR)
+
+    remove_interface._rns_push_restores = True
+    RNS.Transport.remove_interface = staticmethod(remove_interface)
 
 
 def ensure_push_path(destination_hash, interface, now=None):
@@ -338,6 +371,8 @@ class PushTCPServerInterface(TCPServerInterface):
         if settings.propagation_store is not None:
             self.store_watcher = MessageStoreWatcher(settings.propagation_store, self.registry,
                                                      self.dispatcher.enqueue_propagated)
+        _servers.add(self)
+        watch_interface_removals()
         if self.START_SERVICE:
             threading.Thread(target=self._start_service, daemon=True).start()
 
@@ -496,6 +531,13 @@ class PushTCPServerInterface(TCPServerInterface):
         """Hourly from the registration service's sweep: every registration is bound to
         something, with a standby if need be, and keeps its one-hop path through it."""
         self.ensure_standbys()
+        self.repin_paths()
+
+    def repin_paths(self):
+        """Every bound destination's path is the one-hop path through its bound interface.
+        Cheap, so the registration service runs it every maintenance tick: a later-emitted
+        announce heard elsewhere (a LAN multicast peer, a relayed copy) moves the path away, and
+        packets then go there instead of to the push machinery."""
         with self.bindings_lock:
             bound = list(self.bindings.items())
         for destination_hash, interface in bound:
@@ -549,6 +591,7 @@ class PushTCPServerInterface(TCPServerInterface):
 
     def detach(self):
         super().detach()
+        _servers.discard(self)
         if self.store_watcher is not None:
             self.store_watcher.stop()
         self.dispatcher.stop()
