@@ -16,6 +16,7 @@ QUEUE_CAP = 1024
 RETRY_DELAY = 1.0
 PUSH_TITLE = "New message"
 UNREGISTERED_REASONS = ("BadDeviceToken", "DeviceTokenNotForTopic")
+OTHER_ENVIRONMENT = {"production": "sandbox", "sandbox": "production"}
 
 
 def build_payload(packets_b64, title=PUSH_TITLE):
@@ -185,7 +186,22 @@ class PushDispatcher:
         if status == 200:
             RNS.log(f"Pushed {what} to {RNS.prettyhexrep(registration.destination_hash)} ({push_type})", RNS.LOG_VERBOSE)
             return
-        if status == 410 or (status == 400 and reason in UNREGISTERED_REASONS):
+        if status == 400 and reason == "BadDeviceToken":
+            # The token is well formed but not for the environment the app claimed: a Release
+            # build run from Xcode carries a development (sandbox) token and says production.
+            # Try the other environment once; if APNs takes it, the registration was wrong, not
+            # the token, so correct it rather than drop the device.
+            claimed = registration.environment
+            other = OTHER_ENVIRONMENT[claimed]
+            retry_status, retry_reason = self.apns.send(other, *arguments[1:])
+            if retry_status == 200:
+                self.registry.set_environment_if_token(registration.destination_hash, registration.token, other)
+                RNS.log(f"APNs accepted the token for {RNS.prettyhexrep(registration.destination_hash)} in the {other} "
+                        f"environment, not the {claimed} one it registered with; corrected the registration", RNS.LOG_NOTICE)
+                RNS.log(f"Pushed {what} to {RNS.prettyhexrep(registration.destination_hash)} ({push_type})", RNS.LOG_VERBOSE)
+                return
+            reason = f"{reason} in {claimed}, then {retry_status} {retry_reason} in {other}"
+        if status == 410 or (status == 400 and reason.split(" ")[0] in UNREGISTERED_REASONS):
             RNS.log(f"APNs rejected the token for {RNS.prettyhexrep(registration.destination_hash)} ({status} {reason}), unregistering", RNS.LOG_NOTICE)
             self.on_unregistered(registration)
             return

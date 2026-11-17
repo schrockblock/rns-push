@@ -201,14 +201,64 @@ class DispatcherTests(unittest.TestCase):
         self.flush_one()
         self.assertEqual(self.unregistered, [registration()])
 
-    def test_bad_device_token_and_wrong_topic_unregister(self):
-        for reason in ("BadDeviceToken", "DeviceTokenNotForTopic"):
-            with self.subTest(reason=reason):
-                self.unregistered.clear()
-                self.clock.advance(60)
-                self.apns.responses = [(400, reason)]
-                self.flush_one()
-                self.assertEqual(self.unregistered, [registration()])
+    def test_wrong_topic_unregisters_without_a_retry(self):
+        self.apns.responses = [(400, "DeviceTokenNotForTopic")]
+        self.flush_one()
+        self.assertEqual(self.unregistered, [registration()])
+        self.assertEqual(len(self.apns.sends), 1)
+
+    def test_bad_device_token_is_retried_in_the_other_environment(self):
+        # A Release build run from Xcode claims production for a development-signed (sandbox)
+        # token; APNs answers 400 BadDeviceToken. The other environment is tried once.
+        self.apns.responses = [(400, "BadDeviceToken"), (200, None)]
+        with mock.patch("RNS.log") as log:
+            self.flush_one()
+        self.assertEqual([s[0] for s in self.apns.sends], ["sandbox", "production"])
+        self.assertEqual(self.apns.sends[0][1:], self.apns.sends[1][1:])
+        self.assertEqual(self.unregistered, [])
+        self.assertEqual(self.sleeps, [])
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertTrue(any("production" in m and "sandbox" in m and "correct" in m for m in messages), messages)
+        self.assertTrue(any(m.startswith("Pushed 1 packet(s) to") for m in messages), messages)
+
+    def test_an_accepted_retry_corrects_the_registration_for_the_next_push(self):
+        self.apns.responses = [(400, "BadDeviceToken"), (200, None)]
+        self.flush_one()
+        self.assertEqual(self.registry.get(DEST).environment, "production")
+        self.assertEqual(self.registry.get(DEST).token, TOKEN)
+        self.clock.advance(1)
+        self.flush_one()
+        self.assertEqual([s[0] for s in self.apns.sends], ["sandbox", "production", "production"])
+
+    def test_bad_device_token_in_both_environments_unregisters(self):
+        self.apns.responses = [(400, "BadDeviceToken"), (400, "BadDeviceToken")]
+        self.flush_one()
+        self.assertEqual([s[0] for s in self.apns.sends], ["sandbox", "production"])
+        self.assertEqual(self.unregistered, [registration()])
+        self.assertEqual(self.registry.get(DEST).environment, "sandbox")
+
+    def test_a_retry_failing_some_other_way_unregisters_too(self):
+        self.apns.responses = [(400, "BadDeviceToken"), (400, "DeviceTokenNotForTopic")]
+        self.flush_one()
+        self.assertEqual(self.unregistered, [registration()])
+
+    def test_a_correction_never_touches_a_registration_replaced_meanwhile(self):
+        replacement = Registration(destination_hash=DEST, identity_public_key=b"\x05" * 64, token=b"\xbb" * 32,
+                                   environment="sandbox", bundle_id="co.example.push", registered_at=5.0)
+        registry = self.registry
+
+        class ReplacingAPNs(FakeAPNs):
+            def send(self, *arguments):
+                if not self.sends:
+                    registry.put(replacement)
+                return super().send(*arguments)
+
+        self.apns = ReplacingAPNs()
+        self.apns.responses = [(400, "BadDeviceToken"), (200, None)]
+        self.dispatcher = PushDispatcher(self.registry, self.apns, self.unregistered.append,
+                                         clock=self.clock, sleep=self.sleeps.append, start_thread=False)
+        self.flush_one()
+        self.assertEqual(self.registry.get(DEST), replacement)
 
     def test_other_400_does_not_unregister_or_retry(self):
         self.apns.responses = [(400, "BadTopic")]

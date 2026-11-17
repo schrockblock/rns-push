@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import shutil
 import stat
@@ -61,6 +62,16 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(registry.remove_if_token(H1, b"\xaa" * 32))
         self.assertIsNone(registry.get(H1))
         self.assertIsNone(self.make().get(H1))
+
+    def test_set_environment_if_token_changes_only_a_matching_registration(self):
+        registry = self.make()
+        registry.put(registration(token=b"\xaa" * 32))
+        self.assertFalse(registry.set_environment_if_token(H1, b"\xbb" * 32, "production"))
+        self.assertEqual(registry.get(H1).environment, "sandbox")
+        self.assertFalse(registry.set_environment_if_token(H2, b"\xaa" * 32, "production"))
+        self.assertTrue(registry.set_environment_if_token(H1, b"\xaa" * 32, "production"))
+        self.assertEqual(registry.get(H1), dataclasses.replace(registration(), environment="production"))
+        self.assertEqual(self.make().get(H1).environment, "production")
 
     def test_expires_at_is_thirty_days_after_registration(self):
         self.assertEqual(registration(registered_at=100.0).expires_at, 100.0 + REGISTRATION_LIFETIME)

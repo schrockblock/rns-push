@@ -88,6 +88,18 @@ class Registry:
             self._persist()
             return True
 
+    def set_environment_if_token(self, destination_hash, token, environment):
+        """Record that `token` belongs to `environment`, only if the registration still carries
+        token, so a correction learned for an old token never rewrites the registration that
+        replaced it."""
+        with self._lock:
+            registration = self._entries.get(destination_hash)
+            if registration is None or registration.token != token:
+                return False
+            self._entries[destination_hash] = dataclasses.replace(registration, environment=environment)
+            self._persist()
+            return True
+
     def all(self):
         with self._lock:
             return list(self._entries.values())

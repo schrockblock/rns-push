@@ -138,7 +138,8 @@ class RegistrationService:
                                         environment, bundle_id, self.clock())
             self.registry.put(registration)
             self.server.bind(dest_hash, interface)
-            RNS.log(f"Registered {RNS.prettyhexrep(dest_hash)} ({'.'.join(aspects)}) for push", RNS.LOG_INFO)
+            RNS.log(f"Registered {RNS.prettyhexrep(dest_hash)} ({'.'.join(aspects)}) for push: {environment} token, "
+                    f"{bundle_id}", RNS.LOG_INFO)
             return {"ok": True, "destination_hash": dest_hash, "expires_at": int(registration.expires_at)}
         except _AspectsNotAllowed:
             return _error("aspects_not_allowed")

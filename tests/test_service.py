@@ -99,6 +99,13 @@ class ServiceTests(unittest.TestCase):
                                               "co.example.push", 1_000_000.0))
         self.assertEqual(self.server.binds, [(self.hash, self.interface)])
 
+    def test_the_registration_log_line_names_the_environment_and_bundle(self):
+        with mock.patch("RNS.log") as log:
+            self.register()
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertTrue(any(m.startswith("Registered <") and " sandbox " in m and "co.example.push" in m
+                            for m in messages), messages)
+
     def test_unidentified_link_is_refused(self):
         self.assertEqual(self.register(identity=None), {"ok": False, "error": "not_identified"})
         self.assertIsNone(self.registry.get(self.hash))
