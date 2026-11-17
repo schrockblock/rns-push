@@ -11,7 +11,7 @@ import weakref
 import RNS
 from RNS.Interfaces.Interface import Interface
 from RNS.Interfaces.TCPInterface import TCPClientInterface, TCPServerInterface
-from RNS.Transport import IDX_RT_OUTB_IF
+from RNS.Transport import IDX_LT_DSTHASH, IDX_LT_NH_IF, IDX_RT_OUTB_IF
 
 from .apns import APNsClient, JWTSigner
 from .dispatcher import PushDispatcher
@@ -227,6 +227,7 @@ class PushClientInterface(TCPClientInterface):
 
     def process_incoming(self, data):
         self._note_direct_link(data)
+        self._adopt_link(data)
         target = self._proof_target(data)
         if target is None:
             return super().process_incoming(data)
@@ -253,6 +254,31 @@ class PushClientInterface(TCPClientInterface):
                     self._direct_links.popitem(last=False)
         except Exception as e:
             RNS.log(f"Could not read a link request on {self}: {e}", RNS.LOG_DEBUG)
+
+    def _adopt_link(self, data):
+        """A link-request proof answers a LINKREQUEST that left through one of this hub's push
+        interfaces as a push: the phone woke and is answering on this connection, usually before
+        the announce that will rebind it has been handled (Transport runs announce handlers on
+        their own threads). Transport forwards a link proof only when it arrives on the link's
+        next-hop interface, and routes the link's packets there, so the link is handed to this
+        connection first. Transport still validates the proof's signature before forwarding."""
+        try:
+            header = parse_header(data)
+            if header is None or header.packet_type != RNS.Packet.PROOF or header.context != RNS.Packet.LRPROOF:
+                return
+            with RNS.Transport.link_table_lock:
+                entry = RNS.Transport.link_table.get(header.destination_hash)
+                if entry is None:
+                    return
+                through = entry[IDX_LT_NH_IF]
+                if through is self or not isinstance(through, PushClientInterface) or through.push_server is not self.push_server:
+                    return
+                entry[IDX_LT_NH_IF] = self
+                destination_hash = entry[IDX_LT_DSTHASH]
+            RNS.log(f"Link {RNS.prettyhexrep(header.destination_hash)} to {RNS.prettyhexrep(destination_hash)} now runs "
+                    f"over {self}; its request went out through {through}", RNS.LOG_VERBOSE)
+        except Exception as e:
+            RNS.log(f"Could not adopt a link proof on {self}: {e}", RNS.LOG_DEBUG)
 
     def _proof_target(self, data):
         """Stock Transport forwards a proof only if it arrives on the interface the proved

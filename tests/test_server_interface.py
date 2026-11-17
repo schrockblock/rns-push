@@ -13,6 +13,7 @@ from RNS import Discovery
 from RNS.Interfaces.Interface import Interface
 from RNS.vendor import umsgpack
 from RNS.Interfaces.TCPInterface import HDLC, TCPServerInterface
+from RNS.Transport import IDX_LT_NH_IF, IDX_LT_RCVD_IF
 
 import rns_push.interface as push_interface
 from rns_push.interface import PushClientInterface, PushSettings, PushTCPServerInterface
@@ -715,6 +716,79 @@ class ServerInterfaceTests(unittest.TestCase):
         reverse_entry = RNS.Transport.reverse_table.pop(packet.get_hash()[:16])
         self.assertIs(reverse_entry[0], sender)
         self.assertIs(reverse_entry[1], standby)
+
+    def spawned_client(self, server):
+        """A live spawned connection on server, as a phone that has just redialled."""
+        peer, ours = tcp_pair()
+        self.addCleanup(peer.close)
+        self.addCleanup(ours.close)
+        client = PushClientInterface(RNS.Transport, {"name": "Client on Push Hub", "target_host": None,
+                                                     "target_port": None, "i2p_tunneled": False},
+                                     connected_socket=ours, push_server=server)
+        server._adopt(client, "127.0.0.1", "1")
+        client.online = True
+        return client
+
+    def link_entry(self, link_id, next_hop, destination_hash=H1):
+        requester = StubInterface()
+        entry = [time.time(), b"\x33" * 16, next_hop, 1, requester, 2, destination_hash, False, time.time() + 60]
+        with RNS.Transport.link_table_lock:
+            RNS.Transport.link_table[link_id] = entry
+        self.addCleanup(RNS.Transport.link_table.pop, link_id, None)
+        return entry
+
+    def test_a_link_proof_arriving_on_the_clients_new_connection_moves_the_link_onto_it(self):
+        # The sender's LINKREQUEST left through the dormant interface, as a push. The phone wakes
+        # and answers on a fresh connection, before the announce that will rebind it has been
+        # handled (Transport runs announce handlers on their own threads). Stock Transport only
+        # forwards a link proof that arrives on the interface the request left through, and
+        # would route the link's packets back to the dormant one, so the link is handed to the
+        # connection the proof came in on.
+        server = self.make_server()
+        dormant = server.standby(H1)
+        self.addCleanup(server.retire, H1)
+        fresh = self.spawned_client(server)
+        link_id = b"\x42" * 16
+        entry = self.link_entry(link_id, dormant)
+        raw = make_raw(RNS.Packet.PROOF, link_id, context=RNS.Packet.LRPROOF, payload=os.urandom(96))
+        with mock.patch.object(RNS.Transport, "inbound") as inbound, mock.patch("RNS.log") as log:
+            fresh.process_incoming(raw)
+        inbound.assert_called_once_with(raw, fresh)
+        self.assertIs(RNS.Transport.link_table[link_id][IDX_LT_NH_IF], fresh)
+        self.assertIs(RNS.Transport.link_table[link_id][IDX_LT_RCVD_IF], entry[IDX_LT_RCVD_IF])
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertTrue(any(RNS.prettyhexrep(link_id) in m and RNS.prettyhexrep(H1) in m and str(dormant) in m
+                            for m in messages), messages)
+
+    def test_a_link_proof_for_a_link_that_left_through_someone_else_is_left_alone(self):
+        server = self.make_server()
+        fresh = self.spawned_client(server)
+        other_server = self.make_server()
+        for next_hop in (StubInterface(), self.spawned_client(other_server), fresh):
+            with self.subTest(next_hop=type(next_hop).__name__):
+                link_id = os.urandom(16)
+                self.link_entry(link_id, next_hop)
+                raw = make_raw(RNS.Packet.PROOF, link_id, context=RNS.Packet.LRPROOF, payload=os.urandom(96))
+                with mock.patch.object(RNS.Transport, "inbound") as inbound:
+                    fresh.process_incoming(raw)
+                inbound.assert_called_once_with(raw, fresh)
+                self.assertIs(RNS.Transport.link_table[link_id][IDX_LT_NH_IF], next_hop)
+
+    def test_only_a_link_proof_for_a_known_link_moves_anything(self):
+        server = self.make_server()
+        dormant = server.standby(H1)
+        self.addCleanup(server.retire, H1)
+        fresh = self.spawned_client(server)
+        link_id = b"\x43" * 16
+        self.link_entry(link_id, dormant)
+        for raw in (make_raw(RNS.Packet.PROOF, link_id, context=RNS.Packet.NONE, payload=os.urandom(64)),
+                    make_raw(RNS.Packet.DATA, link_id, context=RNS.Packet.LRPROOF, payload=os.urandom(96)),
+                    make_raw(RNS.Packet.PROOF, b"\x44" * 16, context=RNS.Packet.LRPROOF, payload=os.urandom(96))):
+            with self.subTest(raw=raw[:1].hex() + raw[18:19].hex()):
+                with mock.patch.object(RNS.Transport, "inbound") as inbound:
+                    fresh.process_incoming(raw)
+                inbound.assert_called_once_with(raw, fresh)
+                self.assertIs(RNS.Transport.link_table[link_id][IDX_LT_NH_IF], dormant)
 
     def test_owns_only_its_own_push_clients(self):
         server = self.make_server()

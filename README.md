@@ -83,10 +83,13 @@ enter that hash as their push hub destination. State lives in `<config>/storage/
   short redial) moves the path too, but only until that connection closes, when the hub
   points it back at once.
 - Notifications always read "New message". The hub never sees message content.
-- Link requests are pushed, but they only wake the app: the link handshake cannot complete
-  while the app is asleep. Once the woken app reconnects to the hub, the sender's retry of the
-  link request succeeds over the live connection. Single-packet messages, by contrast, are
-  proved directly from the push.
+- Link requests are pushed silently. The woken app answers the request on the connection it
+  redials with, and the hub hands the link to that connection (the request left through the
+  dormant one, which Transport would otherwise insist the proof come back on). So a link-based
+  delivery to a sleeping phone succeeds if the phone wakes, redials and answers within the
+  sender's link establishment timeout; a slower wake still falls back to the sender's retry
+  over the live connection. Single-packet messages, by contrast, are proved directly from the
+  push.
 - If the push hub interface is misconfigured (an unreadable APNs key, IFAC options set, or
   transport disabled), rnsd logs an error and starts without it rather than failing. Check the
   log after configuring.

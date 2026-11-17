@@ -4,7 +4,7 @@ import RNS
 
 DST_LEN = RNS.Reticulum.TRUNCATED_HASHLENGTH // 8
 
-Header = collections.namedtuple("Header", "ifac header_type packet_type destination_hash")
+Header = collections.namedtuple("Header", "ifac header_type packet_type destination_hash context")
 
 
 def parse_header(raw):
@@ -19,4 +19,5 @@ def parse_header(raw):
     return Header(ifac=bool(flags & 0x80),
                   header_type=header_type,
                   packet_type=flags & 0b00000011,
-                  destination_hash=bytes(raw[offset:offset + DST_LEN]))
+                  destination_hash=bytes(raw[offset:offset + DST_LEN]),
+                  context=raw[offset + DST_LEN])

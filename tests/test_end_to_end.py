@@ -196,6 +196,37 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(receipt["status"], RNS.PacketReceipt.DELIVERED, "see hub.log and sender.log")
         self.assertEqual(second.poll(), None)
 
+    def test_a_link_to_a_dormant_client_comes_up_on_the_connection_it_wakes_on(self):
+        # An LXMF message too large for one packet goes over a link. The LINKREQUEST is pushed;
+        # the phone wakes, redials, announces and answers the request on that new connection.
+        # Transport will only forward the proof if it arrives on the interface the request left
+        # through, and would route the link's packets to the dormant one, so the hub has to hand
+        # the link to the new connection.
+        self.spawn("hub", self.hub_dir, self.path("pushes.jsonl"), self.path("ready.json"), self.path("dormant.json"))
+        registration_hex = json.loads(wait_for_file(self.path("ready.json"), 30))["registration_hash"]
+        client = self.spawn("client", self.client_dir, self.identity_path, registration_hex, self.path("registered.json"))
+        self.assertEqual(client.wait(timeout=60), 0, "client failed, see client.log")
+        client_hex = delivery_hash(self.identity).hex()
+        dormant = json.loads(wait_for_file(self.path("dormant.json"), 15))
+        self.assertEqual(dormant, {"bound_hash": client_hex}, "the hub never went dormant, see hub.log")
+
+        self.spawn("sender", self.sender_dir, client_hex, self.path("sent.json"), self.path("receipt.json"), "--link")
+        wait_for_file(self.path("sent.json"), 40)
+        push = json.loads(wait_for_file(self.path("pushes.jsonl"), 20).splitlines()[0])
+        payload = json.loads(push["payload"])
+        self.assertEqual(payload["aps"], {"content-available": 1}, "a link request is pushed silently")
+        raw = base64.b64decode(payload["rns"]["packets"][0])
+        self.assertEqual(raw[0] & 0b11, RNS.Packet.LINKREQUEST)
+        with open(self.path("pushed.bin"), "wb") as f:
+            f.write(raw)
+
+        woken = self.spawn("client", self.client_dir, self.identity_path, registration_hex, self.path("woken.json"),
+                           "--wake", self.path("pushed.bin"))
+        self.assertEqual(woken.wait(timeout=60), 0, "the woken client failed, see client.log")
+        self.assertEqual(json.loads(wait_for_file(self.path("woken.json"), 5)), {"link": True, "data": "over the link"})
+        receipt = json.loads(wait_for_file(self.path("receipt.json"), 40))
+        self.assertEqual(receipt, {"link": "active", "status": RNS.PacketReceipt.DELIVERED}, "see hub.log and sender.log")
+
     def test_nbhd_sync_packet_is_pushed(self):
         self.spawn("hub", self.hub_dir, self.path("pushes.jsonl"), self.path("ready.json"), self.path("dormant.json"))
         registration_hex = json.loads(wait_for_file(self.path("ready.json"), 30))["registration_hash"]
